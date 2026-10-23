@@ -25,6 +25,24 @@ adb shell id   →  uid=0(root) gid=0(root)
 - retail-сборки новее (например `0.372.1.8…20261019`) сертификат **отбивают**
   (`TLSV1_ALERT_UNKNOWN_CA`) — на них нужен откат на `20261013`.
 
+
+### Управление квазаром без перезагрузки — `qsdmn.sh`
+
+Кладётся на колонку (`/data/opt/qsdmn.sh`) и запускается **на ней же**, ПК не нужен:
+
+```
+./qsdmn.sh stop      # остановить квазар (Алиса молчит, микрофон выключен)
+./qsdmn.sh start     # запустить
+./qsdmn.sh restart   # перезапустить
+./qsdmn.sh status    # кто запущен (launcher / maind --platformd / --mediad)
+./qsdmn.sh reboot    # перезагрузить станцию
+```
+
+Пока команда выполняется — индикация: у Lite/Micro анимируется кольцо
+(зелёный — старт, красный — стоп), у моделей с часами все диоды горят на полную.
+Остановка корректная: сначала гасится `quasar_launcher2`, потом `maind`, иначе
+супервизор поднимает детей обратно. Запуск — через штатный `run.sh`.
+
 ---
 
 ## Состав
@@ -34,6 +52,7 @@ start.sh                     поднять стенд (dnsmasq + HTTPS-прок
 stop.sh                      остановить
 check.sh                     найти колонку в сети, проверить ADB, показать версию
 scripts/equasar_server.py    eQuasar-сервер: /get_sync_info, /check_updates, раздача OTA
+scripts/qsdmn.sh             управление quasar на самой колонке: stop/start/restart/status/reboot
 certs/fullchain.pem          лист quasar.yandex.net + промежуточный eMudhra G3C
 certs/quasar-all.key         приватный ключ листа
 config/dnsmasq.conf.tpl      шаблон DNS (IP мака подставляется в start.sh)
