@@ -47,14 +47,43 @@ SYNC_INFO_PAYLOAD = b'{"status":"ok","config":{"account_config":{"spotter":"alis
 
 NO_UPDATE_PAYLOAD = b'{"hasUpdate":false}'
 
-DOWNGRADE_PAYLOAD = b'{"hasUpdate":true,"version":"0.369.1.46.4778262442.20261013.297","downloadUrl":"https://quasar.yandex.net/yandexmicro/ota/user/local/0.369.1.46.4778262442.20261013.297.zip","crc32":371630625,"critical":true,"fallbackUrl":"https://quasar.yandex.net/yandexmicro/ota/user/local/0.369.1.46.4778262442.20261013.297.zip","fallbackIp":"192.168.31.56","updateId":"150484"}'
+def _local_ip():
+    """IP этой машины в локалке — чтобы колонка могла скачать прошивку с нас."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def _downgrade_payload():
+    return json.dumps({
+        "hasUpdate": True,
+        "version": OTA_VERSION,
+        "downloadUrl": "https://quasar.yandex.net" + OTA_PREFIX + os.path.basename(OTA_FILE),
+        "crc32": 371630625,
+        "critical": True,
+        "fallbackUrl": "https://quasar.yandex.net" + OTA_PREFIX + os.path.basename(OTA_FILE),
+        "fallbackIp": LOCAL_IP,
+        "updateId": "150484",
+    }).encode()
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OTA_FILE = os.path.join(BASE_DIR, "firmware", "0.369.1.46.4778262442.20261013.297.zip")
 OTA_PREFIX = "/yandexmicro/ota/"
 OTA_VERSION = "0.369.1.46.4778262442.20261013.297"
-COLUMN_ID = "LP00000000000001982300007d20fe15"
-COLUMN_IPS = {"192.168.31.7","192.168.31.8","192.168.31.9","192.168.31.10","192.168.31.11","192.168.31.12"}
+
+# --- опциональные настройки через окружение (все необязательные) ---
+# IP мака: по умолчанию определяется автоматически
+LOCAL_IP = os.environ.get("LOCAL_IP") or _local_ip()
+# дополнительные IP колонки: по умолчанию ПУСТО — матчим по User-Agent и по device-id в пути
+COLUMN_IPS = {ip.strip() for ip in os.environ.get("COLUMN_IPS", "").split(",") if ip.strip()}
+# device-id колонки: можно переопределить, если у вас другая станция
+COLUMN_ID = os.environ.get("COLUMN_ID", "LP00000000000001982300007d20fe15")
 
 MODE_DOWNGRADE = False
 
@@ -118,7 +147,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
             already = cur.startswith(OTA_VERSION)
-            payload = DOWNGRADE_PAYLOAD if (MODE_DOWNGRADE and not already) else NO_UPDATE_PAYLOAD
+            payload = _downgrade_payload() if (MODE_DOWNGRADE and not already) else NO_UPDATE_PAYLOAD
             if already:
                 print("  >>> [OTA] колонка уже на целевой версии — hasUpdate:false <<<")
             elif MODE_DOWNGRADE:

@@ -3,10 +3,15 @@
 set -uo pipefail
 ADB="${ADB:-$(command -v adb || echo /usr/local/bin/adb)}"
 
-echo "[*] ищу колонку (MAC b8:87:6e = Yandex / Intertech)..."
-for i in $(seq 2 254); do ping -c1 -W150 192.168.31.$i >/dev/null 2>&1 & done; wait
+# подсеть берём из маршрута по умолчанию — ничего не хардкодим
+IFACE="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+MYIP="$(ipconfig getifaddr "${IFACE:-en0}" 2>/dev/null || true)"
+NET="${MYIP%.*}"
+[ -n "$NET" ] || { echo "[!] не смог определить локальную подсеть"; exit 1; }
+echo "[*] ищу колонку (MAC b8:87:6e = Yandex / Intertech) в $NET.0/24..."
+for i in $(seq 2 254); do ping -c1 -W150 "$NET.$i" >/dev/null 2>&1 & done; wait
 
-IPS="$(arp -an | grep -i 'b8:87:6e' | grep -oE '192\.168\.[0-9]+\.[0-9]+' | sort -u)"
+IPS="$(arp -an | grep -i 'b8:87:6e' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u)"
 [ -z "$IPS" ] && { echo "[!] колонка не найдена в ARP — она выключена или не в Wi-Fi"; exit 1; }
 
 for ip in $IPS; do
