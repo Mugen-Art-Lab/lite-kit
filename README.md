@@ -1,4 +1,4 @@
-# Yandex Station Lite 1 — root / ADB kit (macOS)
+# Yandex Station — root / ADB kit (macOS)
 
 Самодостаточный стенд для получения **root-доступа почти любой** своей Яндекс Станции в собственной домашней сети.
 
