@@ -152,6 +152,53 @@ adb connect <IP>:5555 && adb shell id
 
 ---
 
+## Другие модели станций (НЕ ПРОВЕРЕНО)
+
+Стенд не привязан к «Лайт 1» жёстко: меняются всего три вещи — **образ прошивки**,
+**версия в сервере** и **строка модели**. Всё остальное (DNS-подмена `quasar.*`,
+сертификат eMudhra, логика `/get_sync_info`) одинаковое для всего quasar-семейства,
+потому что сертификат покрывает `quasar.yandex.net/.ru`, `*.quasar.yandex.net`,
+`scbh.yandex.net`, `uniproxy.alice.yandex.net`, `strm.yandex.ru` и т.д.
+
+### Что подменить
+
+1. **Прошивка** — положить `firmware/<version>.zip` и переписать `firmware/manifest.json`
+   (version, filename, size, crc32, sha256).
+2. **Сервер** — в `scripts/equasar_server.py` поменять:
+   ```python
+   OTA_VERSION = "<version>"
+   OTA_FILE    = os.path.join(BASE_DIR, "firmware", "<version>.zip")
+   ```
+   и, если нужно, `DOWNGRADE_PAYLOAD` (version, downloadUrl, crc32, updateId).
+3. **Название/модель** — в `README.md` и, при желании, `device_name` в конфиге
+   сторонних сервисов.
+
+### Где брать образы
+
+- зеркало: `http://144.76.194.29:62891/<platform>/` — там `metadata.json` с
+  `version`, `crc32`, `downloadUrl`, `fallbackIp`;
+- официальный CDN: `https://quasar.s3.yandex.net/<platform>/ota/user/<uuid>/<version>.zip`.
+
+Кодовые имена платформ: `yandexmicro` (Лайт 1), `plum` (Лайт 2), `yandexmini`,
+`yandexmini_2`, `yandexmidi` (Станция 2), `cucumber` (Миди), `yandexstation`,
+`yandexstation_2` (Макс), `chiron` (Дуо Макс) и т.д.
+
+### Важные оговорки
+
+- **Ничего из этого не тестировалось** на других моделях: проверено только на
+  `yandexmicro` (Лайт 1) с прошивкой `20261013`.
+- У других моделей другой **boot/разделы** и другая раскладка — образ от чужой
+  платформы ставить нельзя, это кирпич.
+- На части моделей `get_sync_info` и `activate_adb.sh` могут отличаться по структуре
+  конфига; тогда правится `SYNC_INFO_PAYLOAD` под их формат.
+- Не все прошивки принимают серт: на новых retail-сборках TLS отбивается
+  (`unknown ca`), нужен откат на заведомо «уязвимую» версию.
+- Для устройств без `activate_adb.sh` вектор eQuasar не сработает вовсе.
+
+Если проверишь на другой модели — присылай платформу, версию и лог, допишем сюда.
+
+---
+
 ## Лицензия
 
 Код стенда — MIT. Сертификаты и прошивка — собственность их правообладателей,
