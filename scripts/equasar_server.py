@@ -132,7 +132,7 @@ COLUMN_IPS = {ip.strip() for ip in os.environ.get("COLUMN_IPS", "").split(",") i
 COLUMN_ID = os.environ.get("COLUMN_ID", "LP00000000000001982300007d20fe15")
 
 MODE_DOWNGRADE = False
-BUILD = "2026-10-24 16:00"
+BUILD = "V7-LOCAL-SYNC"
 MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
 MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
 SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
