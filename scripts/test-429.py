@@ -255,6 +255,36 @@ print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: zip отдаётся'
 es.BASE_DIR = _saved_base
 shutil.rmtree(_tmp_root, ignore_errors=True)
 
+# --- «просто zip» в корне firmware/: платформа определяется по зеркалу ---
+_tmp2 = tempfile.mkdtemp(prefix="eqfwflat-")
+_flat = os.path.join(_tmp2, "firmware", "0.369.1.46.4778262442.20261013.297.zip")
+os.makedirs(os.path.dirname(_flat), exist_ok=True)
+with open(_flat, "wb") as f:
+    f.write(b"PK\x03\x04" + b"\0" * 2048)
+
+_saved_base2 = es.BASE_DIR
+_saved_mp = es.mirror_platform
+es.BASE_DIR = _tmp2
+es.OTA_FILE = _flat
+es.OTA_VERSION = "0.369.1.46.4778262442.20261013.297"
+es.mirror_platform = lambda v: "yandexmini"
+
+code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmini")
+ok = code == 200 and b'"hasUpdate": true' in data
+if not ok:
+    FAILS.append("плоский zip: платформа по зеркалу -> манифест")
+print(f"{'ok  ' if ok else 'FAIL'} {'плоский zip: платформа по зеркалу -> манифест':52} -> {code}")
+
+code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
+ok = code == 200 and data == b'{"proxied":true}'
+if not ok:
+    FAILS.append("плоский zip: чужая платформа -> Яндекс")
+print(f"{'ok  ' if ok else 'FAIL'} {'плоский zip: чужая платформа -> Яндекс':52} -> {code}")
+
+es.mirror_platform = _saved_mp
+es.BASE_DIR = _saved_base2
+shutil.rmtree(_tmp2, ignore_errors=True)
+
 es.OTA_FILE, es.OTA_VERSION = _saved_ota, _saved_ver
 case("check_updates без прошивки -> ответ Яндекса", "200", "GET",
      "/check_updates?device_id=LP00&version=1.305.4.16&platform=yandexmini",

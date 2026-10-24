@@ -115,6 +115,37 @@ def _guess_platform(name):
     return "yandexstation"
 
 
+MIRROR_URL = os.environ.get("MIRROR_URL", "http://144.76.194.29:62891").rstrip("/")
+_PLAT_CACHE = {}
+
+
+def mirror_platform(version):
+    """К какой платформе на зеркале относится эта версия (для «просто zip» без папки)."""
+    if not version:
+        return None
+    if version in _PLAT_CACHE:
+        return _PLAT_CACHE[version]
+    try:
+        import urllib.request
+        root = urllib.request.urlopen(MIRROR_URL + "/", timeout=8).read().decode("utf-8", "replace")
+        import re as _re
+        plats = _re.findall(r'href="([^"/]+)/"', root)
+        for plat in plats:
+            url = "%s/%s/%s/metadata.json" % (MIRROR_URL, plat, version)
+            try:
+                with urllib.request.urlopen(url, timeout=6) as r:
+                    if r.status == 200:
+                        _PLAT_CACHE[version] = plat
+                        print(f"  >>> [OTA] версия {version} на зеркале относится к {plat} <<<")
+                        return plat
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"  !!! [OTA] не смог проверить зеркало для {version}: {e!r}")
+    _PLAT_CACHE[version] = None
+    return None
+
+
 def fw_manifest(platform):
     """Прошивка для платформы из firmware/<platform>/<версия>.zip (+ manifest.json рядом)."""
     if not platform:
@@ -646,6 +677,15 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             if not fw and OTA_FILE:
                 # старая плоская раскладка firmware/<версия>.zip
                 legacy_plat = ota_platform()
+                # если в манифесте нет платформы — по версии её не определить, спрашиваем зеркало
+                flat = True
+                try:
+                    _m = json.load(open(os.path.join(BASE_DIR, "firmware", "manifest.json"), encoding="utf-8"))
+                    flat = not _m.get("platform")
+                except Exception:
+                    flat = True
+                if flat:
+                    legacy_plat = mirror_platform(OTA_VERSION) or legacy_plat
                 if not plat or plat == legacy_plat:
                     fw = {"path": OTA_FILE, "name": os.path.basename(OTA_FILE),
                           "version": OTA_VERSION, "platform": legacy_plat}
