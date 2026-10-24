@@ -143,7 +143,7 @@ MODE_DOWNGRADE = False
 BUILD = "V7-LOCAL-SYNC"
 MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
 MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
-SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # sync: настоящий ответ Яндекса + adbd
+SYNC_LOCAL = os.environ.get("SYNC_LOCAL") == "1"   # аварийно: отдавать локальный шаблон вместо Яндекса
 # повторы при 429/5xx: сколько всего попыток и пауза между ними
 RETRY_ATTEMPTS = max(1, int(os.environ.get("SYNC_RETRIES", "3")))
 RETRY_DELAY = max(0.0, float(os.environ.get("SYNC_RETRY_DELAY", "2.5")))
@@ -263,6 +263,31 @@ def _masked_json(payload):
 
 
 CACHE_DIR = os.path.join(BASE_DIR, "log", "cache")
+LOG_DIR = os.path.join(BASE_DIR, "log")
+_LOG_LOCK = threading.Lock()
+
+
+def _log_to(name, msg):
+    """Пишет строку в log/<name> (yandex.log, local.log, dns.log)."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with _LOG_LOCK:
+            with open(os.path.join(LOG_DIR, name), "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
+
+
+def log_yandex(msg):
+    _log_to("yandex.log", msg)
+
+
+def log_local(msg):
+    _log_to("local.log", msg)
+
+
+def log_dns(msg):
+    _log_to("dns.log", msg)
 
 
 def _cache_file(path_qs):
@@ -360,6 +385,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         """
         payload = sync_payload() if kind == "sync" else OK_PAYLOAD
         self._send_json(payload)
+        log_local(f"FALLBACK {self.path}: {why}")
         print(f"  >>> [FALLBACK] {why} — отдаю локально 200 "
               f"({'sync + adbd:true' if kind == 'sync' else 'ok'}) <<<")
         if kind == "sync":
@@ -388,7 +414,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_request(self):
         clean_path = self.path.split("?")[0]
-        if SYNC_PROXY and is_sync_path(clean_path):
+        if is_sync_path(clean_path) and not SYNC_LOCAL:
             # реальный ответ Яндекса (родные поля устройства) + adbd; при 429/5xx — шаблон
             self.serve_sync_real(dump_path=os.path.join(BASE_DIR, "log", "sync_real.json"))
             return
@@ -447,33 +473,12 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
         
         if clean_path == "/generate_204":
+            log_local(f"GET /generate_204 от {self.client_address[0]} -> 204")
             self.send_response(204)
             self.end_headers()
             return
             
-        # на этот стенд попадает только колонка (DNS подменён у неё) — отвечаем локально всегда
-        if "register" in clean_path.lower() and os.environ.get("PROXY_REGISTER") != "1":
-            self._drain_body()
-            # Mini 1.369 зацикливается на регистрации, если ответ не такой — проверено на живой колонке
-            _r = b'{"message":"allvalid","status":"ok"}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(_r)))
-            self.end_headers()
-            self.wfile.write(_r)
-            print("  >>> [REGISTER] локальный ответ allvalid <<<")
-            return
-
-        if clean_path in ("/set_device_capability", "/update_device_state"):
-            self._drain_body()
-            _ok = b'{"status":"ok"}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(_ok)))
-            self.end_headers()
-            self.wfile.write(_ok)
-            return
-
+        # локальных заглушек больше нет: register / capability / update_state идут в Яндекс
         if "get_sync_info" in clean_path.lower():
             self._log_sync_request()
             try:
@@ -482,7 +487,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 print(f"  !!! [SYNC] шаблон сломан ({e!r}), отдаю встроенный")
                 _p = SYNC_INFO_PAYLOAD
             self._send_json(_p)
-            print("  >>> [SUCCESS] Колонке отправлена команда активации ADB! <<<")
+            print("  >>> [SUCCESS] Колонке отправлена команда активации ADB (локальный режим) <<<")
+            log_local(f"SYNC (SYNC_LOCAL=1) {self.path}")
             self._log_payload("SYNC→", _p, "локальный шаблон")
             return
             
@@ -498,22 +504,20 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
             already = bool(cur) and (cur.startswith(OTA_VERSION) or OTA_VERSION.startswith(cur))
-            if no_downgrade() or not OTA_FILE:
-                payload = NO_UPDATE_PAYLOAD
-                print("  >>> [OTA] обновления выключены (нет файла или run/no_downgrade) <<<")
-            elif already:
-                payload = NO_UPDATE_PAYLOAD
-                print(f"  >>> [OTA] колонка на нашей версии ({cur}) — hasUpdate:false <<<")
-            else:
-                # авто: прошивка в firmware/ не совпадает с версией колонки -> предлагаем её
+            if OTA_FILE and not no_downgrade() and not already:
+                # авто: в firmware/ лежит другая версия -> предлагаем её (единственный локальный ответ)
                 payload = _downgrade_payload()
                 print(f"  >>> [OTA-AUTO] у колонки {cur or '?'}, у нас {OTA_VERSION} — "
                       f"отдаю манифест прошивки <<<")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+                log_local(f"OTA-AUTO {self.path} -> манифест {OTA_VERSION}")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            # во всех остальных случаях спрашиваем настоящий Яндекс и отдаём его ответ как есть
+            self.proxy_upstream(fallback="sync" if is_sync_path(self.path) else "ok")
             return
             
         # Всё остальное (/register, /get_config, ...) — пробрасываем в настоящий Яндекс,
@@ -567,6 +571,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         if start == 0 and end == size - 1:
             print("  >>> [OTA] файл отдан ПОЛНОСТЬЮ (%d б) <<<" % size)
         print(f"  >>> [OTA] отдано {length}б (bytes {start}-{end}/{size}) <<<")
+        log_local(f"OTA {self.path} -> {code} {length}b")
         sys.stdout.flush()
 
     def serve_sync_real(self, dump_path=None):
@@ -584,6 +589,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
             hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
             r, data = self._upstream(host, ip, body, hdrs)
+            log_yandex(f"SYNC {self.command} {self.path} -> {r.status} ({len(data)}b)")
             if r.status == 200:
                 try:
                     d = json.loads(data)
@@ -600,6 +606,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                     payload = sync_payload(source=d)
                     self._send_json(payload)
                     print(f"  >>> [SYNC-REAL] ответ Яндекса + adbd ({len(data)}b) <<<")
+                    log_local(f"SYNC adbd-инъекция {self.path} ({len(payload)}b)")
                     self._log_payload("SYNC-REAL→", payload, "настоящий ответ Яндекса")
                     return
                 print("  !!! [SYNC-REAL] 200, но не JSON — беру локальный шаблон")
@@ -621,6 +628,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
         try:
             r, data = self._upstream(host, ip, body, hdrs)
+            log_yandex(f"{self.command} {self.path} -> {r.status} ({len(data)}b)")
             if r.status == 200:
                 try:
                     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -638,6 +646,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 with open(cache, "rb") as f:
                     data = f.read()
                 print(f"  >>> [CACHE] upstream {r.status}, отдаю кэш ({len(data)}b)")
+                log_local(f"CACHE {self.path} (upstream {r.status})")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -670,6 +679,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
             hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
             r, data = self._upstream(host, ip, body, hdrs)
+            log_yandex(f"{self.command} {self.path} -> {r.status} ({len(data)}b)")
             if dump_path and r.status == 200:
                 try:
                     with open(dump_path, "wb") as f:
@@ -703,6 +713,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"{}")
             print(f"  !!! [PROXY] ошибка {self.path}: {e!r}")
+            log_yandex(f"ERROR {self.path}: {e!r}")
             sys.stdout.flush()
 
 # --- встроенный DNS (Windows: dnsmasq там нет) ---
@@ -800,9 +811,12 @@ def _dns_handle(query, client_ip=None):
     qname, qtype = _dns_qname(query)
     if qname in DNS_NAMES:
         # A спрашивают -> отдаём свой IP (или несколько); AAAA и остальное -> NODATA
-        if qtype == 1:
-            return _dns_reply(query, _best_ips(client_ip))
-        return _dns_reply(query)
+        ips = _best_ips(client_ip) if qtype == 1 else []
+        log_dns(f"{client_ip or '-'} {'A' if qtype == 1 else 'TYPE' + str(qtype)} "
+                f"{(qname or b'?').decode('idna', 'replace')} -> "
+                f"{','.join(ips) if ips else 'NODATA'}")
+        return _dns_reply(query, ips) if ips else _dns_reply(query)
+    log_dns(f"{client_ip or '-'} FORWARD {(qname or b'?').decode('idna', 'replace')} (type {qtype})")
     return _dns_forward(query) or _dns_reply(query)
 
 
@@ -942,9 +956,10 @@ def main():
         print("[РЕЖИМ] PASSTHROUGH — всё уходит в настоящий Яндекс, подмены выключены")
     if MODE_OTA_ONLY:
         print("[РЕЖИМ] OTA-ONLY — только прошивка: манифест и zip, всё остальное в Яндекс (ADB не включаем)")
-    if SYNC_PROXY:
-        print("[РЕЖИМ] SYNC_PROXY — sync: настоящий ответ Яндекса + adbd "
-              "(429/5xx → локальный шаблон)")
+    if SYNC_LOCAL:
+        print("[РЕЖИМ] SYNC_LOCAL=1 — sync из локального шаблона (Яндекс не спрашиваем)")
+    else:
+        print("[РЕЖИМ] sync: настоящий ответ Яндекса + adbd (429/5xx → локальный шаблон)")
     print("==================================================================")
     if MODE_DOWNGRADE:
         print("РЕЖИМ: [ДАУНГРЕЙД] — Отдача официальной уязвимой прошивки Яндекса")

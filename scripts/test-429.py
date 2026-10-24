@@ -165,12 +165,12 @@ case("неизвестный путь 200 проксируется", "200", "GET
      want_body=b'{"proxied":true}')
 
 # --- локальные заглушки ---
-case("POST /register локальный", "429", "POST", "/register",
-     want_body=b'{"message":"allvalid","status":"ok"}')
-case("POST /set_device_capability", "429", "POST", "/set_device_capability",
-     want_body=b'{"status":"ok"}')
-case("POST /update_device_state", "429", "POST", "/update_device_state",
-     want_body=b'{"status":"ok"}')
+case("POST /register -> в Яндекс", "200", "POST", "/register",
+     want_body=b'{"proxied":true}')
+case("POST /set_device_capability -> в Яндекс", "200", "POST", "/set_device_capability",
+     want_body=b'{"proxied":true}')
+case("POST /update_device_state -> в Яндекс", "200", "POST", "/update_device_state",
+     want_body=b'{"proxied":true}')
 
 # --- авто-раздача прошивки: включена, если версия колонки не совпадает ---
 _saved_ota, _saved_ver = es.OTA_FILE, es.OTA_VERSION
@@ -203,18 +203,18 @@ _fw_case("авто-прошивка: run/no_downgrade -> выкл", "1.0.0", Fal
 
 es.OTA_FILE = None
 code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
-ok = code == 200 and b'"hasUpdate": false' in data or b'"hasUpdate":false' in data
+ok = code == 200 and data == b'{"proxied":true}'
 if not ok:
-    FAILS.append("авто-прошивка: нет файла -> выкл")
-print(f"{'ok  ' if ok else 'FAIL'} {'авто-прошивка: нет файла -> hasUpdate:false':52} -> {code}")
+    FAILS.append("авто-прошивка: нет файла -> в Яндекс")
+print(f"{'ok  ' if ok else 'FAIL'} {'авто-прошивка: нет файла -> ответ Яндекса':52} -> {code}")
 
 es.OTA_FILE, es.OTA_VERSION = _saved_ota, _saved_ver
-case("check_updates без downgrade -> hasUpdate:false", "429", "GET",
+case("check_updates без прошивки -> ответ Яндекса", "200", "GET",
      "/check_updates?device_id=LP00&version=1.305.4.16&platform=yandexmini",
-     want_body=b'{"hasUpdate":false}')
-case("check_updates любой путь -> hasUpdate:false", "429", "GET",
+     want_body=b'{"proxied":true}')
+case("check_updates любой путь -> в Яндекс", "200", "GET",
      "/quasar/check_updates/v2?device_id=LP00&platform=yandexmini",
-     want_body=b'{"hasUpdate":false}')
+     want_body=b'{"proxied":true}')
 
 # --- диагностика SYNC_PROXY: sync берётся у Яндекса и дополняется adbd ---
 def _no_dump():
@@ -244,14 +244,14 @@ def _upstream_sync_plain():
     UPSTREAM["body"] = b'{"proxied":true}'
 
 
-es.SYNC_PROXY = True
+es.SYNC_LOCAL = False
 _no_dump()
-case("SYNC_PROXY: 429 -> adbd + шаблон, дамп не пишется", "429", "GET",
+case("sync: 429 -> adbd + шаблон", "429", "GET",
      "/get_sync_info?device_id=LP00", want_adbd=True)
 if os.path.exists(es.SYNC_DUMP):
     FAILS.append("SYNC_PROXY: дамп 429 записан")
 print(f"{'ok  ' if not os.path.exists(es.SYNC_DUMP) else 'FAIL'} "
-      f"{'SYNC_PROXY: 429 не попал в sync_real.json':52} -> dump={os.path.exists(es.SYNC_DUMP)}")
+      f"{'sync: 429 не пишется в дамп':52} -> dump={os.path.exists(es.SYNC_DUMP)}")
 
 _upstream_sync_200()
 UPSTREAM["mode"] = "200"
@@ -261,14 +261,14 @@ ok = (code == 200 and d.get("tags") == ["real-answer"]
       and d.get("config", {}).get("system_config", {}).get("adbd", {}).get("remoteActivation") is True
       and d.get("adbd", {}).get("remoteActivation") is True)
 if not ok:
-    FAILS.append("SYNC_PROXY: реальный ответ + adbd")
-print(f"{'ok  ' if ok else 'FAIL'} {'SYNC_PROXY: 200 Яндекса + adbd (поля сохранены)':52} -> {code} tags={d.get('tags')}")
+    FAILS.append("sync: реальный ответ + adbd")
+print(f"{'ok  ' if ok else 'FAIL'} {'sync: 200 Яндекса + adbd (поля сохранены)':52} -> {code} tags={d.get('tags')}")
 
 _upstream_sync_garbage()
-case("SYNC_PROXY: 200 не-JSON -> шаблон + adbd", "200", "GET",
+case("sync: 200 не-JSON -> шаблон + adbd", "200", "GET",
      "/get_sync_info?device_id=LP00", want_adbd=True)
 _upstream_sync_200()
-case("SYNC_PROXY: POST sync + adbd", "200", "POST", "/get_sync_info", want_adbd=True)
+case("sync: POST + adbd", "200", "POST", "/get_sync_info", want_adbd=True)
 
 def _upstream_sync_adbd_false():
     """Яндекс отдал adbd:false во всех ветках и свои лишние поля — всё должно стать true."""
@@ -285,7 +285,7 @@ def _upstream_sync_adbd_false():
     }).encode()
 
 
-es.SYNC_PROXY = True
+es.SYNC_LOCAL = False
 _no_dump()
 _upstream_sync_adbd_false()
 code, data = call("GET", "/get_sync_info?device_id=LP00")
@@ -302,8 +302,8 @@ ok = (code == 200
       and all(a.get("fullDurationMs") == 31536000000 for a in all_adbd)
       and "custom" not in (cfg.get("system_config") or {}).get("adbd", {}))
 if not ok:
-    FAILS.append("SYNC_PROXY: adbd:false -> true во всех ветках")
-print(f"{'ok  ' if ok else 'FAIL'} {'SYNC_PROXY: adbd:false -> true во всех 4 ветках':52} "
+    FAILS.append("sync: adbd:false -> true во всех ветках")
+print(f"{'ok  ' if ok else 'FAIL'} {'sync: adbd:false -> true во всех 4 ветках':52} "
       f"-> {code} {[bool(a and a.get('remoteActivation')) for a in all_adbd]}")
 
 # --- повторы при 429: 2 неудачи, третья успешная -> отдаём настоящий ответ ---
@@ -333,10 +333,10 @@ if not ok:
 print(f"{'ok  ' if ok else 'FAIL'} {'повторы: 429x3 -> локальный шаблон + adbd':52} -> {code} adbd={bool(d.get('adbd'))}")
 
 es.RETRY_ATTEMPTS = 1
-es.SYNC_PROXY = False
+es.SYNC_LOCAL = True
 _upstream_sync_plain()
 
-case("SYNC_PROXY выкл: sync локальный, Яндекс не трогаем", "200", "GET",
+case("SYNC_LOCAL=1: локальный шаблон без Яндекса", "200", "GET",
      "/get_sync_info?device_id=LP00", want_adbd=True)
 
 # --- OTA: HEAD / Range на фейковой прошивке ---

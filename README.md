@@ -206,12 +206,17 @@ opkg() { PATH="$OPT/bin:$OPT/sbin:$PATH" env -u LD_LIBRARY_PATH -u LD_PRELOAD "$
 
 Колонка **всегда** получает `200`. Подробно — [docs/sync-adb.md](docs/sync-adb.md).
 
-### Лог
+### Логи
 
-`log/server.log`: `<<< [SYNC←]` (что спросила колонка, заголовки) и
-`>>> [SYNC→] / [SYNC-REAL→]` (что ушло: размер, источник, состояние `adbd`,
-сам JSON). Секреты (`*token*`, `*secret*`, `*private*`, `wifi_hash`, координаты)
-заменяются на `<скрыто>`.
+- `log/server.log` — консольный лог (всё вместе);
+- `log/yandex.log` — **только запросы, ушедшие в Яндекс** (метод, путь, статус, размер);
+- `log/local.log` — **только то, что отдали локально** (sync с `adbd`, авто-прошивка, OTA, fallback, `generate_204`, кэш);
+- `log/dns.log` — **каждый DNS-запрос** (клиент, имя, тип, ответ) — на Windows тоже.
+
+Локальных заглушек (`register`, `set_device_capability`, `update_device_state`,
+`hasUpdate:false`) больше нет: такие запросы уходят в настоящий Яндекс и
+возвращаются как есть. Локально остаются только: sync с `adbd`, авто-манифест
+прошивки при несовпадении версии, раздача файла прошивки и fallback при 429/5xx.
 
 ---
 
@@ -226,7 +231,7 @@ opkg() { PATH="$OPT/bin:$OPT/sbin:$PATH" env -u LD_LIBRARY_PATH -u LD_PRELOAD "$
 
 Флаг-файлы (создать пустой файл, потом перезапуск):
 
-- `run/sync_proxy` — sync берётся у Яндекса как есть (с добавлением `adbd`);
+- `SYNC_LOCAL=1` (env) — отдавать локальный шаблон sync вместо Яндекса;
 - `run/no_downgrade` — запретить авто-раздачу прошивки из `firmware/`.
 
 ---
