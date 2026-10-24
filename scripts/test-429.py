@@ -217,6 +217,42 @@ case("SYNC_PROXY: 200 не-JSON -> шаблон + adbd", "200", "GET",
 _upstream_sync_200()
 case("SYNC_PROXY: POST sync + adbd", "200", "POST", "/get_sync_info", want_adbd=True)
 
+def _upstream_sync_adbd_false():
+    """Яндекс отдал adbd:false во всех ветках и свои лишние поля — всё должно стать true."""
+    UPSTREAM["mode"] = "200"
+    UPSTREAM["body"] = json.dumps({
+        "status": "ok",
+        "adbd": {"remoteActivation": False, "network": False, "fullDurationMs": 0},
+        "config": {
+            "adbd": {"remoteActivation": False},
+            "system_config": {"adbd": {"remoteActivation": False, "custom": 1},
+                              "syncd": {"pollPeriodSec": 1800}},
+            "device_config": {"name": "Яндекс Мини", "adbd": {"remoteActivation": False}},
+        },
+    }).encode()
+
+
+es.SYNC_PROXY = True
+_no_dump()
+_upstream_sync_adbd_false()
+code, data = call("GET", "/get_sync_info?device_id=LP00")
+d = json.loads(data) if data else {}
+cfg = d.get("config") or {}
+all_adbd = [
+    d.get("adbd"),
+    cfg.get("adbd"),
+    (cfg.get("system_config") or {}).get("adbd"),
+    (cfg.get("device_config") or {}).get("adbd"),
+]
+ok = (code == 200
+      and all(bool(a and a.get("remoteActivation") is True) for a in all_adbd)
+      and all(a.get("fullDurationMs") == 31536000000 for a in all_adbd)
+      and "custom" not in (cfg.get("system_config") or {}).get("adbd", {}))
+if not ok:
+    FAILS.append("SYNC_PROXY: adbd:false -> true во всех ветках")
+print(f"{'ok  ' if ok else 'FAIL'} {'SYNC_PROXY: adbd:false -> true во всех 4 ветках':52} "
+      f"-> {code} {[bool(a and a.get('remoteActivation')) for a in all_adbd]}")
+
 es.SYNC_PROXY = False
 _upstream_sync_plain()
 
