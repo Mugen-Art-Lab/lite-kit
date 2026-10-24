@@ -16,6 +16,7 @@ import argparse
 import socket
 import http.client
 import json
+import time
 import urllib.request
 
 UPSTREAM_HOST = "quasar.yandex.net"
@@ -135,7 +136,10 @@ MODE_DOWNGRADE = False
 BUILD = "V7-LOCAL-SYNC"
 MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
 MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
-SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
+SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # sync: настоящий ответ Яндекса + adbd
+# повторы при 429/5xx: сколько всего попыток и пауза между ними
+RETRY_ATTEMPTS = max(1, int(os.environ.get("SYNC_RETRIES", "3")))
+RETRY_DELAY = max(0.0, float(os.environ.get("SYNC_RETRY_DELAY", "2.5")))
 
 
 SYNC_DUMP = os.path.join(BASE_DIR, "log", "sync_real.json")
@@ -349,6 +353,27 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         if kind == "sync":
             self._log_payload("SYNC→", payload, "локальный шаблон (fallback)")
 
+    def _upstream(self, host, ip, body, hdrs):
+        """Запрос в Яндекс с повторами на 429/5xx: 3 попытки, пауза 2.5с по умолчанию."""
+        last = (None, b"")
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            conn = PinnedHTTPS(host, ip, timeout=20)
+            conn.request(self.command, self.path, body=body, headers=hdrs)
+            r = conn.getresponse()
+            data = r.read()
+            if not upstream_soft_error(r.status):
+                return r, data
+            last = (r, data)
+            if attempt < RETRY_ATTEMPTS:
+                print(f"  ... [RETRY] upstream {r.status} на {self.path.split('?')[0]}, "
+                      f"попытка {attempt}/{RETRY_ATTEMPTS}, пауза {RETRY_DELAY:g}с")
+                sys.stdout.flush()
+                time.sleep(RETRY_DELAY)
+        print(f"  ... [RETRY] upstream {last[0].status if last[0] else '-'} после "
+              f"{RETRY_ATTEMPTS} попыток — сдаюсь, отдаю локально")
+        sys.stdout.flush()
+        return last
+
     def handle_request(self):
         clean_path = self.path.split("?")[0]
         if SYNC_PROXY and is_sync_path(clean_path):
@@ -535,10 +560,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             body = self._read_body() if self.command in ("POST", "PUT") else None
             skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
             hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
-            conn = PinnedHTTPS(host, ip, timeout=20)
-            conn.request(self.command, self.path, body=body, headers=hdrs)
-            r = conn.getresponse()
-            data = r.read()
+            r, data = self._upstream(host, ip, body, hdrs)
             if r.status == 200:
                 try:
                     d = json.loads(data)
@@ -575,10 +597,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
         hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
         try:
-            conn = PinnedHTTPS(host, ip, timeout=20)
-            conn.request(self.command, self.path, body=body, headers=hdrs)
-            r = conn.getresponse()
-            data = r.read()
+            r, data = self._upstream(host, ip, body, hdrs)
             if r.status == 200:
                 try:
                     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -627,10 +646,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             body = self._read_body() if self.command in ("POST", "PUT") else None
             skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
             hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
-            conn = PinnedHTTPS(host, ip, timeout=20)
-            conn.request(self.command, self.path, body=body, headers=hdrs)
-            r = conn.getresponse()
-            data = r.read()
+            r, data = self._upstream(host, ip, body, hdrs)
             if dump_path and r.status == 200:
                 try:
                     with open(dump_path, "wb") as f:

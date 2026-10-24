@@ -46,6 +46,12 @@ class FakeConn:
         m = UPSTREAM["mode"]
         if m == "boom":
             raise OSError("connection reset by peer")
+        if m == "flaky":
+            UPSTREAM["calls"] = UPSTREAM.get("calls", 0) + 1
+            if UPSTREAM["calls"] <= UPSTREAM.get("fail_first", 2):
+                return FakeResp(429, b'{"status":"limited"}')
+            UPSTREAM["calls"] = 0
+            return FakeResp(200, UPSTREAM["body"])
         if m == "200":
             return FakeResp(200, UPSTREAM["body"] or b'{"proxied":true}')
         if m == "404":
@@ -55,6 +61,9 @@ class FakeConn:
 
 es.PinnedHTTPS = FakeConn
 es.real_ip = lambda host="quasar.yandex.net": "127.0.0.1"
+# в тестах не ждём паузы между повторами
+es.RETRY_ATTEMPTS = 1
+es.RETRY_DELAY = 0
 es.CACHE_DIR = tempfile.mkdtemp(prefix="eqcache-")
 es.SYNC_DUMP = os.path.join(es.CACHE_DIR, "sync_real.json")
 
@@ -253,6 +262,33 @@ if not ok:
 print(f"{'ok  ' if ok else 'FAIL'} {'SYNC_PROXY: adbd:false -> true во всех 4 ветках':52} "
       f"-> {code} {[bool(a and a.get('remoteActivation')) for a in all_adbd]}")
 
+# --- повторы при 429: 2 неудачи, третья успешная -> отдаём настоящий ответ ---
+es.RETRY_ATTEMPTS = 3
+es.RETRY_DELAY = 0
+UPSTREAM["body"] = json.dumps({"status": "ok", "tags": ["after-retry"],
+                               "config": {"system_config": {}}}).encode()
+UPSTREAM["fail_first"] = 2
+UPSTREAM["calls"] = 0
+UPSTREAM["mode"] = "flaky"
+code, data = call("GET", "/get_sync_info?device_id=LP00")
+d = json.loads(data) if data else {}
+ok = (code == 200 and d.get("tags") == ["after-retry"]
+      and d.get("adbd", {}).get("remoteActivation") is True)
+if not ok:
+    FAILS.append("повторы: 429,429,200 -> настоящий ответ")
+print(f"{'ok  ' if ok else 'FAIL'} {'повторы: 429,429,200 -> настоящий ответ + adbd':52} -> {code} tags={d.get('tags')}")
+
+UPSTREAM["fail_first"] = 3
+UPSTREAM["calls"] = 0
+code, data = call("GET", "/get_sync_info?device_id=LP00")
+d = json.loads(data) if data else {}
+ok = (code == 200 and d.get("adbd", {}).get("remoteActivation") is True
+      and d.get("tags") != ["after-retry"])
+if not ok:
+    FAILS.append("повторы: 3x429 -> шаблон")
+print(f"{'ok  ' if ok else 'FAIL'} {'повторы: 429x3 -> локальный шаблон + adbd':52} -> {code} adbd={bool(d.get('adbd'))}")
+
+es.RETRY_ATTEMPTS = 1
 es.SYNC_PROXY = False
 _upstream_sync_plain()
 
