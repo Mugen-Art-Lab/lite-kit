@@ -30,13 +30,21 @@ UPSTREAM_HOST = "quasar.yandex.net"
 
 
 def real_ip(host=UPSTREAM_HOST):
-    """Настоящий IP через DoH (локальный DNS отдаёт нам .56, поэтому спрашиваем Google)."""
+    """Настоящий IP: DoH -> системный DNS -> известный адрес (свой IP не отдаём)."""
+    mine = set(local_ips()) if "local_ips" in globals() else set()
     try:
         u = "https://dns.google/resolve?name=%s&type=A" % host
         d = json.loads(urllib.request.urlopen(u, timeout=5).read())
         for a in d.get("Answer", []):
-            if a.get("type") == 1:
-                return a["data"]
+            ip = a.get("data")
+            if a.get("type") == 1 and ip and ip not in mine:
+                return ip
+    except Exception:
+        pass
+    try:
+        ip = socket.gethostbyname(host)
+        if ip and ip not in mine:
+            return ip
     except Exception:
         pass
     return "213.180.193.230"
@@ -147,6 +155,7 @@ SYNC_LOCAL = os.environ.get("SYNC_LOCAL") == "1"   # аварийно: отда�
 # повторы при 429/5xx: сколько всего попыток и пауза между ними
 RETRY_ATTEMPTS = max(1, int(os.environ.get("SYNC_RETRIES", "3")))
 RETRY_DELAY = max(0.0, float(os.environ.get("SYNC_RETRY_DELAY", "2.5")))
+UPSTREAM_TIMEOUT = max(2.0, float(os.environ.get("UPSTREAM_TIMEOUT", "8")))
 
 
 SYNC_DUMP = os.path.join(BASE_DIR, "log", "sync_real.json")
@@ -267,8 +276,18 @@ LOG_DIR = os.path.join(BASE_DIR, "log")
 _LOG_LOCK = threading.Lock()
 
 
+_last_log = {}
+_LOG_DEDUP_SEC = 5
+
+
 def _log_to(name, msg):
     """Пишет строку в log/<name> (yandex.log, local.log, dns.log)."""
+    key = (name, msg)
+    now = time.time()
+    prev = _last_log.get(key, 0)
+    if now - prev < _LOG_DEDUP_SEC:
+        return
+    _last_log[key] = now
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with _LOG_LOCK:
@@ -403,7 +422,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         """Запрос в Яндекс с повторами на 429/5xx: 3 попытки, пауза 2.5с по умолчанию."""
         last = (None, b"")
         for attempt in range(1, RETRY_ATTEMPTS + 1):
-            conn = PinnedHTTPS(host, ip, timeout=20)
+            conn = PinnedHTTPS(host, ip, timeout=UPSTREAM_TIMEOUT)
             conn.request(self.command, self.path, body=body, headers=hdrs)
             r = conn.getresponse()
             data = r.read()
@@ -480,6 +499,14 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             return
 
         
+        if clean_path in ("/", "/favicon.ico"):
+            # это браузер открыл адрес стенда — в Яндекс такое гонять незачем
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            log_local(f"GET {clean_path} от {self.client_address[0]} -> 404 (браузерный шум)")
+            return
+
         if clean_path == "/generate_204":
             log_local(f"GET /generate_204 от {self.client_address[0]} -> 204")
             self.send_response(204)
