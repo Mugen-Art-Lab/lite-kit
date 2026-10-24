@@ -65,7 +65,7 @@ Write-Host "[*] платформа: $Platform"
 
 $versions = @(Get-Links "$Mirror/$Platform/")
 if ($versions.Count -eq 0) { Write-Host "[!] нет версий в $Mirror/$Platform/"; exit 1 }
-$versions = $versions | Sort-Object -Property @{Expression={ (Get-VersionKey $_) }} -Descending
+$versions = @($versions | Sort-Object -Property @{Expression={ (Get-VersionKey $_) }} -Descending)
 
 $known = @{
     "yandexmicro" = "0.369.1.46.4778262442.20261013.297"
