@@ -59,6 +59,9 @@ if ($env:SYNC_RETRIES) { $env:SYNC_RETRIES = $env:SYNC_RETRIES }
 if ($env:SYNC_RETRY_DELAY) { $env:SYNC_RETRY_DELAY = $env:SYNC_RETRY_DELAY }
 
 # --- запуск сервера (лог в log\server.log) ---
+# pythonw не цепляется к консоли, поэтому start.ps1 не «висит» на её stdout
+$pyw = Join-Path (Split-Path -Parent $py) "pythonw.exe"
+if (Test-Path $pyw) { $py = $pyw }
 $proc = Start-Process -FilePath $py -ArgumentList $argl -WorkingDirectory $Base `
         -RedirectStandardOutput "$Base\log\server.log" -RedirectStandardError "$Base\log\server.err.log" `
         -WindowStyle Hidden -PassThru
