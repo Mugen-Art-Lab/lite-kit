@@ -1,8 +1,18 @@
-# Yandex Station — root / ADB kit (Windows)
+# Yandex Station — root / ADB kit (Windows · Linux · macOS)
 
 Стенд для получения ADB/root на **своей** Яндекс Станции в домашней сети.
-Работает на обычном **Windows 10/11 ПК**: поднимает DNS + HTTPS, в ответ на
-`/get_sync_info` отдаёт `adbd.remoteActivation=true`, и колонка включает `:5555`.
+Поднимает DNS + HTTPS, в ответ на `/get_sync_info` отдаёт
+`adbd.remoteActivation=true`, и колонка включает `:5555`.
+
+Все три платформы равнозначны — выбирай свою:
+
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Стенд | `start.ps1` | `start.sh` | `start.sh` |
+| Остановить | `stop.ps1` | `stop.sh` | `stop.sh` |
+| Проверить ADB | `check.ps1` | `check.sh` | `check.sh` |
+| Прошивка | `install-firmware.ps1` | `install-firmware.sh` | `install-firmware.sh` |
+| DNS | встроенный в сервер (`--dns`) | `dnsmasq` | `dnsmasq` |
 
 > ⚠️ Только свои устройства и своя сеть. Сброс снимает привязку аккаунта,
 > неудачная прошивка может превратить колонку в кирпич. Всё на свой риск.
@@ -23,115 +33,147 @@
 
 ---
 
-## Что нужно (Windows)
+## Требования
 
-1. **Windows 10/11**, права администратора (скрипт сам попросит UAC).
-2. **Python 3.8+** с python.org, при установке галочка **Add python.exe to PATH**
-   (проверка: `python --version`).
-3. **Роутер, где можно вручную поменять DNS** (или раздать этот ПК как DNS по DHCP).
-   Это единственное жёсткое требование — железо любое.
-4. Свободные порты **53 (UDP/TCP), 80, 443**. На Windows 53 иногда держит
-   «Общий доступ к подключению к Интернету (ICS)» — отключи службу.
-5. `adb` в PATH или `adb.exe` в папке `tools\` (для `check.ps1`).
-6. Колонка в той же сети + физический доступ к ней.
+Общее для всех платформ — **роутер, где можно вручную поменять DNS** (или раздать
+эту машину как DNS по DHCP). Железо любое: ПК, ноутбук, мини-ПК, Raspberry Pi.
 
-`dnsmasq` не нужен: DNS-сервер встроен в `scripts/equasar_server.py` (`--dns`).
+**Windows**
+- Windows 10/11, права администратора (скрипт сам попросит UAC);
+- Python 3.8+ с python.org, галочка **Add python.exe to PATH**;
+- свободные порты 53 (UDP/TCP), 80, 443 (порт 53 иногда держит служба ICS);
+- `dnsmasq` не нужен — DNS встроен в сервер.
+
+**Linux**
+- `dnsmasq`, `python3` (OpenSSL ≥ 1.1.1), `openssl`, `dig`;
+- свободные порты 53, 80, 443 (`systemd-resolved`/`avahi` не должны мешать);
+- `sudo` для запуска.
+
+**macOS**
+- `dnsmasq` (`brew install dnsmasq`), `python3`, `openssl`, `dig`;
+- свободные порты 53, 80, 443;
+- `sudo` для запуска.
+
+Плюс на любой платформе: `adb` в PATH (или `adb.exe` в `tools\` / свой путь в `check`),
+колонка в той же сети и физический доступ к ней.
 
 ---
 
 ## Быстрый старт
 
-Распакуй папку, например в `C:\lite-kit`, и запусти PowerShell от администратора:
+### Windows
 
 ```powershell
 cd C:\lite-kit
-.\start.ps1
+.\start.ps1        # UAC, firewall, DNS + HTTPS, покажет IP и проверит DNS
 ```
 
-Скрипт сам:
-- проверит порты и права;
-- добавит правила firewall для 53/80/443;
-- поднимет DNS + HTTPS (`python scripts\equasar_server.py --dns`);
-- покажет IP этой машины и проверит, что DNS отвечает.
+### Linux
 
-Дальше:
-1. На роутере поставь **DNS = IP этого ПК** (покажет `start.ps1`).
+```bash
+cd ~/lite-kit
+sudo ./start.sh    # поднимет dnsmasq + HTTPS, покажет IP и проверит DNS
+```
+
+### macOS
+
+```bash
+cd ~/lite-kit
+sudo ./start.sh    # то же: dnsmasq + HTTPS
+```
+
+Дальше одинаково на всех платформах:
+
+1. На роутере поставь **DNS = IP этой машины** (скрипт его печатает).
 2. Сбрось колонку в factory: выдерни питание → включи → зажми **кнопку паузы**
    (▶/⏸) на ~7–10 с до жёлто-салатового индикатора → дождись Алисы.
 3. В приложении «Дом с Алисой» добавь устройство, дойди до выбора Wi-Fi
-   и подключи к своей сети (DNS уже указывает на ПК).
-4. После синка в `log\server.log` появится
-   `>>> [SYNC-REAL→] payload …, adbd: … =on` (или `[SYNC→]`, если Яндекс ответил 429).
+   и подключи к своей сети (DNS уже указывает на машину стенда).
+4. В логе появится `>>> [SYNC-REAL→] payload …, adbd: … =on`
+   (или `[SYNC→]`, если Яндекс ответил 429).
 5. Проверь ADB:
 
-```powershell
-.\check.ps1
-# или
+| Windows | Linux / macOS |
+|---|---|
+| `.\check.ps1` | `./check.sh` |
+
+```bash
 adb connect <IP-колонки>:5555
 adb shell id
 ```
 
 Остановить стенд:
 
-```powershell
-.\stop.ps1
-```
+| Windows | Linux / macOS |
+|---|---|
+| `.\stop.ps1` | `./stop.sh` |
+
 и верни на роутере DNS в «Автоматически».
 
 ---
 
 ## Прошивка: скачать нужную версию
 
-Скрипт качает прошивку с зеркала и кладёт её в `firmware\<версия>.zip`
+Скрипт качает прошивку с зеркала и кладёт её в `firmware/<версия>.zip`
 (на зеркале файл называется `update.zip` — переименовываем), плюс пишет
-`firmware\manifest.json` (version, filename, size, crc32, sha256).
+`firmware/manifest.json` (version, filename, size, crc32, sha256).
 
-**Интерактивно (меню по цифрам):**
+### Интерактивно (меню по цифрам)
 
+Windows:
 ```powershell
 .\install-firmware.ps1
-# 1) выбрать платформу:  1) bergamot  2) chiron  3) cucumber … 15) yandexmicro …
-# 2) выбрать версию:     1) 0.372…  2) 0.369… (проверенная помечена) …
+```
+Linux / macOS:
+```bash
+./install-firmware.sh
 ```
 
-**Из CLI — по имени:**
+Меню: сначала платформа (`1) bergamot … 15) yandexmicro …`), потом версия
+(сверху новые, проверенные помечены `<-- проверено (ADB работает)`).
+Enter = значение по умолчанию.
+
+### Из CLI — по имени
 
 ```powershell
 .\install-firmware.ps1 -Platform yandexmini -Version 1.305.4.16.3237824040.20250721
 ```
+```bash
+./install-firmware.sh -p yandexmini -v 1.305.4.16.3237824040.20250721
+```
 
-**Из CLI — по номерам из меню:**
+### Из CLI — по номерам из меню
 
 ```powershell
 .\install-firmware.ps1 -Platform 15 -Version 3
 ```
-
-Другие параметры:
-
-```powershell
-.\install-firmware.ps1 -List                  # только список платформ
-.\install-firmware.ps1 -Mirror http://…:62891 # другое зеркало
+```bash
+./install-firmware.sh -p 15 -v 3
 ```
 
-Уже проверенные версии в меню помечены `<-- проверено (ADB работает)`:
-`yandexmicro` → `0.369.1.46.4778262442.20261013.297`,
-`yandexmini` → `1.305.4.16.3237824040.20250721`.
+Дополнительно:
 
-Старые `.zip` из `firmware\` удаляются, чтобы сервер не взял не тот файл.
+| Windows | Linux / macOS |
+|---|---|
+| `.\install-firmware.ps1 -List` | `./install-firmware.sh --list` |
+| `.\install-firmware.ps1 -Mirror http://…:62891` | `./install-firmware.sh -p … -v …` с `MIRROR_URL=…` |
+
+Проверенные версии: `yandexmicro` → `0.369.1.46.4778262442.20261013.297`,
+`yandexmini` → `1.305.4.16.3237824040.20250721`. Старые `.zip` из `firmware/`
+удаляются, чтобы сервер не взял не тот файл.
 
 ### Раздать скачанную прошивку колонке
 
 По умолчанию обновления **выключены** (колонка получает `hasUpdate:false`).
-Чтобы предложить прошивку из `firmware\`:
+Чтобы предложить прошивку из `firmware/` — включи режим downgrade:
 
-```powershell
-New-Item run\downgrade -ItemType File -Force
-.\stop.ps1; .\start.ps1
-```
+| Windows | Linux / macOS |
+|---|---|
+| `New-Item run\downgrade -ItemType File -Force` | `touch run/downgrade` |
 
-В логе: `>>> [DOWNGRADE] Колонке отправлен манифест уязвимой прошивки!` и
-`>>> [OTA] файл отдан ПОЛНОСТЬЮ`. Вернуть как было: `Remove-Item run\downgrade`
-и перезапуск.
+и перезапусти стенд. В логе: `>>> [DOWNGRADE] Колонке отправлен манифест уязвимой прошивки!`
+и `>>> [OTA] файл отдан ПОЛНОСТЬЮ`. Вернуть как было: удали флаг
+(`Remove-Item run\downgrade` / `rm run/downgrade`) и перезапусти.
 
 ---
 
@@ -147,7 +189,7 @@ New-Item run\downgrade -ItemType File -Force
 
 ### Лог
 
-`log\server.log`: `<<< [SYNC←]` (что спросила колонка, заголовки) и
+`log/server.log`: `<<< [SYNC←]` (что спросила колонка, заголовки) и
 `>>> [SYNC→] / [SYNC-REAL→]` (что ушло: размер, источник, состояние `adbd`,
 сам JSON). Секреты (`*token*`, `*secret*`, `*private*`, `wifi_hash`, координаты)
 заменяются на `<скрыто>`.
@@ -165,8 +207,8 @@ New-Item run\downgrade -ItemType File -Force
 
 Флаг-файлы (создать пустой файл, потом перезапуск):
 
-- `run\sync_proxy` — sync берётся у Яндекса как есть (с добавлением `adbd`);
-- `run\downgrade` — раздавать прошивку из `firmware\`.
+- `run/sync_proxy` — sync берётся у Яндекса как есть (с добавлением `adbd`);
+- `run/downgrade` — раздавать прошивку из `firmware/`.
 
 ---
 
@@ -174,25 +216,12 @@ New-Item run\downgrade -ItemType File -Force
 
 | Симптом | Что смотреть |
 |---|---|
-| `start.ps1` просит UAC и закрывается | согласись с UAC; окно откроется заново уже от админа |
-| `порт 53 уже занят` | отключи службу ICS / `mDNS`-конфликт, или освободи 53 |
-| Колонка «нет интернета» | идут ли `HEAD /generate_204 → 204` в `log\server.log`; DNS на роутере точно на IP ПК |
-| Нет `:5555` после ребута | был ли `[SYNC…] … adbd=on`; подожди минуту; проверь `.\check.ps1` |
-| `не смог определить IP` | задай явно: `$env:LOCAL_IP="192.168.1.10"; .\start.ps1` |
+| Windows: `start.ps1` просит UAC и закрывается | согласись с UAC, окно откроется заново уже от админа |
+| `порт 53 уже занят` | Windows: служба ICS; Linux: `systemd-resolved`/`avahi`; освободи 53 |
+| Колонка «нет интернета» | идут ли `HEAD /generate_204 → 204` в `log/server.log`; DNS на роутере точно на IP машины |
+| Нет `:5555` после ребута | был ли `[SYNC…] … adbd=on`; подожди минуту; проверь `check` |
+| `не смог определить IP` | задай явно: `LOCAL_IP=<ip>` (аналог `$env:LOCAL_IP` в PowerShell) |
 | `unknown ca` | прошивка не принимает серт — ставь проверенную версию через `install-firmware` |
-
----
-
-## Linux / macOS (альтернатива)
-
-Там те же возможности скриптами `start.sh` / `stop.sh` / `check.sh` и
-`install-firmware.sh`, но вместо встроенного DNS используется `dnsmasq`.
-
-```bash
-sudo ./start.sh
-./install-firmware.sh          # меню: платформа (цифра) -> версия (цифра)
-./install-firmware.sh -p yandexmicro -v 0.369.1.46.4778262442.20261013.297
-```
 
 ---
 
@@ -200,10 +229,11 @@ sudo ./start.sh
 
 ```
 start.ps1 / stop.ps1 / check.ps1        стенд, остановка, поиск колонки (Windows)
-install-firmware.ps1                   меню/CLI установки прошивки
+install-firmware.ps1                   меню/CLI установки прошивки (Windows)
 start.sh / stop.sh / check.sh          то же для Linux/macOS
 install-firmware.sh                    то же для Linux/macOS
 scripts/equasar_server.py              DNS + HTTP/HTTPS, sync, OTA
+scripts/dnscheck.py                    проверка DNS-ответа стенда
 scripts/sync_template.json             локальный шаблон ответа
 scripts/test-429.py                    30+ проверок: 429/5xx, повторы, OTA
 certs/                                 серты eMudhra (fullchain.pem + ключ)
