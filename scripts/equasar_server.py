@@ -418,6 +418,11 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             payload = OK_PAYLOAD
         self._send_json(payload)
         log_local(f"FALLBACK {self.path}: {why}")
+        if kind in ("register",):
+            try:
+                log_local(f"FALLBACK-BODY {self.path.split('?')[0]}: {payload.decode('utf-8')}")
+            except Exception:
+                pass
         _what = {"sync": "sync + adbd:true", "register": "allvalid", "ok": "ok"}.get(kind, "ok")
         print(f"  >>> [FALLBACK] {why} — отдаю локально 200 ({_what}) <<<")
         if kind == "sync":
