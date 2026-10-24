@@ -132,7 +132,7 @@ COLUMN_IPS = {ip.strip() for ip in os.environ.get("COLUMN_IPS", "").split(",") i
 COLUMN_ID = os.environ.get("COLUMN_ID", "LP00000000000001982300007d20fe15")
 
 MODE_DOWNGRADE = False
-BUILD = "2026-10-24 15:40"
+BUILD = "2026-10-24 15:48"
 MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
 MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
 SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
@@ -197,6 +197,15 @@ def sync_payload():
     d["adbd"] = dict(ADBD)
     d.setdefault("status", "ok")
     return json.dumps(d, ensure_ascii=False).encode()
+
+
+
+CACHE_DIR = os.path.join(BASE_DIR, "log", "cache")
+
+
+def _cache_file(path_qs):
+    import hashlib
+    return os.path.join(CACHE_DIR, hashlib.sha1(path_qs.encode()).hexdigest() + ".cache")
 
 
 class EquasarHandler(http.server.BaseHTTPRequestHandler):
@@ -274,6 +283,11 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         )
 
 
+        # --- то, что не наше: кэшируем, чтобы 429 от Яндекса не долетал до колонки ---
+        if path_l.startswith("/glagol/") or path_l.startswith("/telemetry") or path_l.startswith("/metrics"):
+            self.serve_cached()
+            return
+
         # --- раздача OTA со своего диска (кусками, с Range) ---
         if clean_path.endswith(".zip") or clean_path.startswith(OTA_PREFIX):
             self.serve_ota()
@@ -286,7 +300,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             return
             
         # на этот стенд попадает только колонка (DNS подменён у неё) — отвечаем локально всегда
-        if clean_path.rstrip("/").endswith("/register") and os.environ.get("PROXY_REGISTER") != "1":
+        if "register" in clean_path.lower() and os.environ.get("PROXY_REGISTER") != "1":
             self._drain_body()
             # Mini 1.369 зацикливается на регистрации, если ответ не такой — проверено на живой колонке
             _r = b'{"message":"allvalid","status":"ok"}'
@@ -308,7 +322,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(_ok)
             return
 
-        if clean_path in ["/get_sync_info", "/quasar/get_sync_info"]:
+        if "get_sync_info" in clean_path.lower():
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             _p = sync_payload()
@@ -394,6 +408,62 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             print("  >>> [OTA] файл отдан ПОЛНОСТЬЮ (%d б) <<<" % size)
         print(f"  >>> [OTA] отдано {length}б (bytes {start}-{end}/{size}) <<<")
         sys.stdout.flush()
+
+    def serve_cached(self, ttl_ok=True, dump_path=None):
+        """Проксируем с кэшем: 200 — кэшируем и отдаём; ошибка/429 — отдаём кэш, если есть."""
+        key = self.path
+        cache = _cache_file(key)
+        host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
+        ip = real_ip(host)
+        body = None
+        if self.command in ("POST", "PUT"):
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                body = self.rfile.read(n)
+        skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
+        hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
+        try:
+            conn = PinnedHTTPS(host, ip, timeout=20)
+            conn.request(self.command, self.path, body=body, headers=hdrs)
+            r = conn.getresponse()
+            data = r.read()
+            if r.status == 200:
+                try:
+                    os.makedirs(CACHE_DIR, exist_ok=True)
+                    with open(cache, "wb") as f:
+                        f.write(data)
+                except OSError:
+                    pass
+                self.send_response(200)
+                self.send_header("Content-Type", r.getheader("Content-Type") or "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if os.path.exists(cache):
+                with open(cache, "rb") as f:
+                    data = f.read()
+                print(f"  >>> [CACHE] upstream {r.status}, отдаю кэш ({len(data)}b)")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            self.send_response(r.status)
+            self.end_headers()
+        except Exception:
+            if os.path.exists(cache):
+                with open(cache, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            self.send_response(502)
+            self.end_headers()
 
     def proxy_upstream(self, dump_path=None):
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
