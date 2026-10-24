@@ -132,7 +132,7 @@ COLUMN_IPS = {ip.strip() for ip in os.environ.get("COLUMN_IPS", "").split(",") i
 COLUMN_ID = os.environ.get("COLUMN_ID", "LP00000000000001982300007d20fe15")
 
 MODE_DOWNGRADE = False
-BUILD = "2026-10-24 15:48"
+BUILD = "2026-10-24 16:00"
 MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
 MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
 SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
@@ -593,8 +593,11 @@ def main():
     print("Нажмите Ctrl+C для остановки.")
     print("------------------------------------------------------------------")
 
-    t_http = threading.Thread(target=run_http, daemon=True)
-    t_https = threading.Thread(target=run_https, args=(cert_path, key_path), daemon=True)
+    # порты можно переопределить (удобно для проверки, когда 80/443 заняты)
+    _hp = int(os.environ.get("HTTP_PORT", "80"))
+    _sp = int(os.environ.get("HTTPS_PORT", "443"))
+    t_http = threading.Thread(target=run_http, args=(_hp,), daemon=True)
+    t_https = threading.Thread(target=run_https, args=(cert_path, key_path, _sp), daemon=True)
 
     t_http.start()
     t_https.start()
