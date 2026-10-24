@@ -167,6 +167,8 @@ case("неизвестный путь 200 проксируется", "200", "GET
 # --- локальные заглушки ---
 case("POST /register -> в Яндекс", "200", "POST", "/register",
      want_body=b'{"proxied":true}')
+case("POST /register при 429 -> allvalid", "429", "POST", "/register",
+     want_body=b'{"message":"allvalid","status":"ok"}')
 case("POST /set_device_capability -> в Яндекс", "200", "POST", "/set_device_capability",
      want_body=b'{"proxied":true}')
 case("POST /update_device_state -> в Яндекс", "200", "POST", "/update_device_state",
