@@ -132,7 +132,7 @@ COLUMN_IPS = {ip.strip() for ip in os.environ.get("COLUMN_IPS", "").split(",") i
 COLUMN_ID = os.environ.get("COLUMN_ID", "LP00000000000001982300007d20fe15")
 
 MODE_DOWNGRADE = False
-BUILD = "2026-10-24 15:31"
+BUILD = "2026-10-24 15:40"
 MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
 MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
 SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
@@ -285,7 +285,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
             
-        if clean_path.rstrip("/").endswith("/register") and is_column and os.environ.get("PROXY_REGISTER") != "1":
+        # на этот стенд попадает только колонка (DNS подменён у неё) — отвечаем локально всегда
+        if clean_path.rstrip("/").endswith("/register") and os.environ.get("PROXY_REGISTER") != "1":
             self._drain_body()
             # Mini 1.369 зацикливается на регистрации, если ответ не такой — проверено на живой колонке
             _r = b'{"message":"allvalid","status":"ok"}'
@@ -297,7 +298,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             print("  >>> [REGISTER] локальный ответ allvalid <<<")
             return
 
-        if is_column and clean_path in ("/set_device_capability", "/update_device_state"):
+        if clean_path in ("/set_device_capability", "/update_device_state"):
             self._drain_body()
             _ok = b'{"status":"ok"}'
             self.send_response(200)
@@ -307,7 +308,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(_ok)
             return
 
-        if clean_path in ["/get_sync_info", "/quasar/get_sync_info"] and is_column:
+        if clean_path in ["/get_sync_info", "/quasar/get_sync_info"]:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             _p = sync_payload()
