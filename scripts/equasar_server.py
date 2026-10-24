@@ -442,7 +442,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self._log_payload("SYNC→", _p, "локальный шаблон")
             return
             
-        if clean_path in ["/check_updates", "/quasar/check_updates"] and is_column:
+        # любые варианты пути (в т.ч. /quasar/check_updates, /check_updates/v2) — не только точный
+        if ("check_updates" in clean_path.lower() or "allow_update" in clean_path.lower()) and is_column:
             # Предлагаем обновление ВСЕГДА, пока колонка не на этой версии.
             # Если попытка не удалась — она осталась на старой версии и получит предложение снова.
             cur = ""
