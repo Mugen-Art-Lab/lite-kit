@@ -59,14 +59,16 @@ if ($env:SYNC_RETRIES) { $env:SYNC_RETRIES = $env:SYNC_RETRIES }
 if ($env:SYNC_RETRY_DELAY) { $env:SYNC_RETRY_DELAY = $env:SYNC_RETRY_DELAY }
 
 # --- запуск сервера (лог в log\server.log) ---
-$cmd = "`"$py`" " + ($argl -join " ") + " >> `"$Base\log\server.log`" 2>&1"
-$proc = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cmd) -WorkingDirectory $Base -WindowStyle Hidden -PassThru
+$proc = Start-Process -FilePath $py -ArgumentList $argl -WorkingDirectory $Base `
+        -RedirectStandardOutput "$Base\log\server.log" -RedirectStandardError "$Base\log\server.err.log" `
+        -WindowStyle Hidden -PassThru
 $proc.Id | Out-File -Encoding ascii "$Base\run\server.pid"
-Start-Sleep -Seconds 2
+Start-Sleep -Seconds 3
 
 if ($proc.HasExited) {
-    Write-Host "[!] сервер упал, смотри log\server.log"
-    Get-Content "$Base\log\server.log" -Tail 20
+    Write-Host "[!] сервер упал (код $($proc.ExitCode)):"
+    Get-Content "$Base\log\server.err.log" -Tail 20 -ErrorAction SilentlyContinue
+    Get-Content "$Base\log\server.log" -Tail 20 -ErrorAction SilentlyContinue
     exit 1
 }
 
