@@ -67,7 +67,7 @@ $launcher = "$Base\run\server.cmd"
 $lines = @(
     "@echo off",
     "cd /d `"$Base`"",
-    "`"$py`" " + ($argl -join " ") + " >> `"$Base\log\server.log`" 2>> `"$Base\log\server.err.log`""
+    ("`"$py`" " + ($argl -join " ") + " >> `"$Base\log\server.log`" 2>> `"$Base\log\server.err.log`"")
 )
 Set-Content -Path $launcher -Value $lines -Encoding ascii
 $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
