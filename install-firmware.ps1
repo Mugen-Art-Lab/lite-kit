@@ -15,8 +15,7 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Base = Split-Path -Parent $PSCommandPath
-$FwDir = Join-Path $Base "firmware"
-New-Item -ItemType Directory -Force -Path $FwDir | Out-Null
+$FwRoot = Join-Path $Base "firmware"
 
 function Get-Links([string]$Url) {
     $html = (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 30).Content
@@ -62,6 +61,8 @@ if (-not $Platform) {
     }
 }
 Write-Host "[*] платформа: $Platform"
+$FwDir = Join-Path $FwRoot $Platform
+New-Item -ItemType Directory -Force -Path $FwDir | Out-Null
 
 $versions = @(Get-Links "$Mirror/$Platform/")
 if ($versions.Count -eq 0) { Write-Host "[!] нет версий в $Mirror/$Platform/"; exit 1 }

@@ -72,6 +72,7 @@ if [ -z "$PLATFORM" ]; then
 fi
 
 echo "[*] платформа: $PLATFORM"
+FW_DIR="$BASE/firmware/$PLATFORM"
 
 VERSIONS_URL="$MIRROR/$PLATFORM/"
 VERS=()

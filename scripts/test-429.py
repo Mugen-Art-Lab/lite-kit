@@ -221,6 +221,40 @@ if not ok:
     FAILS.append("платформа не совпала -> в Яндекс")
 print(f"{'ok  ' if ok else 'FAIL'} {'другая платформа -> ответ Яндекса':52} -> {code}")
 
+# --- новая раскладка firmware/<platform>/<version>.zip ---
+_tmp_root = tempfile.mkdtemp(prefix="eqfw-")
+_d = os.path.join(_tmp_root, "firmware", "yandexmini")
+os.makedirs(_d, exist_ok=True)
+_z = os.path.join(_d, "1.305.4.16.3237824040.20250721.zip")
+with open(_z, "wb") as f:
+    f.write(b"PK\x03\x04" + b"\0" * 2048)
+with open(os.path.join(_d, "manifest.json"), "w") as f:
+    json.dump({"platform": "yandexmini", "version": "1.305.4.16.3237824040.20250721",
+               "filename": os.path.basename(_z), "crc32": 1}, f)
+
+_saved_base = es.BASE_DIR
+es.BASE_DIR = _tmp_root
+es.OTA_FILE = None
+code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmini")
+ok = code == 200 and b'"hasUpdate": true' in data and b"yandexmini/ota/1.305.4.16" in data
+if not ok:
+    FAILS.append("новая раскладка: манифест по платформе")
+print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: манифест для своей модели':52} -> {code}")
+
+code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
+ok = code == 200 and data == b'{"proxied":true}'
+if not ok:
+    FAILS.append("новая раскладка: чужая платформа -> Яндекс")
+print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: чужая модель -> Яндекс':52} -> {code}")
+
+code, data = call("GET", "/yandexmini/ota/1.305.4.16.3237824040.20250721.zip", )
+ok = code == 200 and len(data) == 2052
+if not ok:
+    FAILS.append("новая раскладка: раздача zip")
+print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: zip отдаётся':52} -> {code} {len(data)}b")
+es.BASE_DIR = _saved_base
+shutil.rmtree(_tmp_root, ignore_errors=True)
+
 es.OTA_FILE, es.OTA_VERSION = _saved_ota, _saved_ver
 case("check_updates без прошивки -> ответ Яндекса", "200", "GET",
      "/check_updates?device_id=LP00&version=1.305.4.16&platform=yandexmini",

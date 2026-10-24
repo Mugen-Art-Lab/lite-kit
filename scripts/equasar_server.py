@@ -115,6 +115,52 @@ def _guess_platform(name):
     return "yandexstation"
 
 
+def fw_manifest(platform):
+    """Прошивка для платформы из firmware/<platform>/<версия>.zip (+ manifest.json рядом)."""
+    if not platform:
+        return None
+    import glob
+    d = os.path.join(BASE_DIR, "firmware", platform)
+    meta = {}
+    try:
+        meta = json.load(open(os.path.join(d, "manifest.json"), encoding="utf-8"))
+    except Exception:
+        pass
+    path = None
+    name = meta.get("filename")
+    if name and os.path.exists(os.path.join(d, name)):
+        path = os.path.join(d, name)
+    else:
+        zips = sorted(glob.glob(os.path.join(d, "*.zip")))
+        if zips:
+            path = zips[-1]
+    if not path:
+        return None
+    return {
+        "path": path,
+        "name": os.path.basename(path),
+        "version": os.path.basename(path)[:-4],
+        "platform": meta.get("platform") or platform,
+        "crc32": meta.get("crc32"),
+    }
+
+
+_CRC_CACHE = {}
+
+
+def fw_crc(fw):
+    import zlib
+    p = fw["path"]
+    if p in _CRC_CACHE:
+        return _CRC_CACHE[p]
+    crc = 0
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            crc = zlib.crc32(chunk, crc)
+    _CRC_CACHE[p] = crc & 0xFFFFFFFF
+    return _CRC_CACHE[p]
+
+
 def ota_platform():
     """Платформа прошивки: из firmware/manifest.json (его пишет install-firmware),
     иначе из имени файла. По версии модель НЕ определить: у mini_2, midi, plum тоже 0.x."""
@@ -149,15 +195,22 @@ def _ota_crc():
     return _OTA_CRC["v"]
 
 
-def _downgrade_payload():
-    name = os.path.basename(OTA_FILE) if OTA_FILE else ""
+def _downgrade_payload(fw=None):
+    if fw:
+        name, ver = fw["name"], fw["version"]
+        pfx = "/%s/ota/" % (fw.get("platform") or OTA_PLATFORM)
+        crc = fw["crc32"] if fw.get("crc32") is not None else fw_crc(fw)
+    else:
+        name, ver = (os.path.basename(OTA_FILE) if OTA_FILE else ""), OTA_VERSION
+        pfx = OTA_PREFIX
+        crc = _ota_crc()
     return json.dumps({
         "hasUpdate": True,
-        "version": OTA_VERSION,
-        "downloadUrl": "https://quasar.yandex.net" + OTA_PREFIX + name,
-        "crc32": _ota_crc(),
+        "version": ver,
+        "downloadUrl": "https://quasar.yandex.net" + pfx + name,
+        "crc32": crc,
         "critical": True,
-        "fallbackUrl": "https://quasar.yandex.net" + OTA_PREFIX + name,
+        "fallbackUrl": "https://quasar.yandex.net" + pfx + name,
         "fallbackIp": LOCAL_IP,
         "updateId": "150484",
     }).encode()
@@ -518,17 +571,19 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # --- раздача OTA со своего диска (кусками, с Range) ---
-        _pfx = "/%s/ota/" % (ota_platform() or OTA_PLATFORM)
-        _pfx = "/%s/ota/" % (ota_platform() or OTA_PLATFORM)
-        if clean_path.endswith(".zip") or clean_path.startswith(_pfx):
-            if MODE_OTA_ONLY or (OTA_FILE and not no_downgrade()):
-                self.serve_ota()
-            else:
-                # прошивки нет или стоит run/no_downgrade: отдавать нечего
-                print("  >>> [OTA] раздача прошивки отключена (нет файла или run/no_downgrade)")
-                self.send_response(404)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+        m_zip = None
+        if clean_path.endswith(".zip"):
+            import re as _re
+            m_zip = _re.match(r"^/([^/]+)/ota/(.+)$", clean_path)
+        if m_zip:
+            plat, name = m_zip.group(1), m_zip.group(2)
+            if MODE_OTA_ONLY or not no_downgrade():
+                if self.serve_ota(plat, name):
+                    return
+            print("  >>> [OTA] нет файла или run/no_downgrade — 404 <<<")
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
 
         
@@ -573,19 +628,25 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 plat = (q.get("platform") or [""])[0]
             except Exception:
                 pass
-            _plat_now = ota_platform()
-            if plat and OTA_FILE and plat != _plat_now:
-                # прошивка в firmware/ для другой модели — не подсовываем
-                print(f"  >>> [OTA] платформа колонки {plat} != прошивки {_plat_now} — проксирую в Яндекс <<<")
+            fw = fw_manifest(plat) if plat else None
+            if not fw and OTA_FILE:
+                # старая плоская раскладка firmware/<версия>.zip
+                legacy_plat = ota_platform()
+                if not plat or plat == legacy_plat:
+                    fw = {"path": OTA_FILE, "name": os.path.basename(OTA_FILE),
+                          "version": OTA_VERSION, "platform": legacy_plat}
+            if plat and fw and plat != (fw.get("platform") or plat):
+                print(f"  >>> [OTA] платформа колонки {plat} != прошивки {fw.get('platform')} — проксирую в Яндекс <<<")
                 self.proxy_upstream(fallback="ok")
                 return
-            already = bool(cur) and (cur.startswith(OTA_VERSION) or OTA_VERSION.startswith(cur))
-            if OTA_FILE and not no_downgrade() and not already:
+            _ver = (fw or {}).get("version", OTA_VERSION)
+            already = bool(cur) and (cur.startswith(_ver) or _ver.startswith(cur))
+            if fw and not no_downgrade() and not already:
                 # авто: в firmware/ лежит другая версия -> предлагаем её (единственный локальный ответ)
-                payload = _downgrade_payload()
-                print(f"  >>> [OTA-AUTO] у колонки {cur or '?'}, у нас {OTA_VERSION} — "
+                payload = _downgrade_payload(fw)
+                print(f"  >>> [OTA-AUTO] у колонки {cur or '?'}, у нас {_ver} — "
                       f"отдаю манифест прошивки <<<")
-                log_local(f"OTA-AUTO {self.path} -> манифест {OTA_VERSION}")
+                log_local(f"OTA-AUTO {self.path} -> манифест {_ver} ({fw.get('platform')})")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -626,14 +687,22 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         log_local(f"REGISTER allvalid {self.path}")
         print("  >>> [REGISTER] отдано allvalid <<<")
 
-    def serve_ota(self):
-        """Отдача локального OTA-файла с поддержкой Range (колонка качает кусками)."""
+    def serve_ota(self, platform=None, name=None):
+        """Отдача OTA из firmware/<platform>/<name> с Range. Возвращает True, если отдал."""
         import os
-        if not OTA_FILE or not os.path.exists(OTA_FILE):
-            self.send_response(404)
-            self.end_headers()
-            return
-        size = os.path.getsize(OTA_FILE)
+        path = None
+        if platform and name:
+            cand = os.path.join(BASE_DIR, "firmware", platform, name)
+            if os.path.exists(cand):
+                path = cand
+        if not path:
+            fw = fw_manifest(platform) if platform else None
+            if not fw and OTA_FILE and os.path.exists(OTA_FILE):
+                fw = {"path": OTA_FILE}
+            if not fw:
+                return False
+            path = fw["path"]
+        size = os.path.getsize(path)
         start, end = 0, size - 1
         rng = self.headers.get("Range")
         code = 200
@@ -656,8 +725,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
         self.end_headers()
         if self.command == "HEAD":
-            return
-        with open(OTA_FILE, "rb") as f:
+            return True
+        with open(path, "rb") as f:
             f.seek(start)
             left = length
             while left > 0:
@@ -667,13 +736,14 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(chunk)
                 except Exception:
-                    return
+                    return True
                 left -= len(chunk)
         if start == 0 and end == size - 1:
             print("  >>> [OTA] файл отдан ПОЛНОСТЬЮ (%d б) <<<" % size)
         print(f"  >>> [OTA] отдано {length}б (bytes {start}-{end}/{size}) <<<")
         log_local(f"OTA {self.path} -> {code} {length}b")
         sys.stdout.flush()
+        return True
 
     def serve_sync_real(self, dump_path=None):
         """Настоящий ответ Яндекса + вписанный ADB.
