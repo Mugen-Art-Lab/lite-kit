@@ -812,7 +812,9 @@ def _best_ips(client_ip=None):
         same = [ip for ip in ips if ip.startswith(net)]
         if same:
             return same
-    return ips[:4]
+    # нет совпадения по подсети (или клиент локальный) — отдаём только основной IP,
+    # чтобы не подсовывать VPN/виртуальные адаптеры
+    return ips[:1]
 
 
 def _dns_handle(query, client_ip=None):
