@@ -825,7 +825,8 @@ def run_dns(port=53):
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         udp.bind(("0.0.0.0", port))
-        print(f"[*] DNS сервер слушает UDP {port} (quasar.* -> {", ".join(local_ips())})")
+        _ips = ", ".join(local_ips())
+        print(f"[*] DNS сервер слушает UDP {port} (quasar.* -> {_ips})")
         sys.stdout.flush()
 
         def udp_loop():
