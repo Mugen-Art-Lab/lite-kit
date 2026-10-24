@@ -1,17 +1,31 @@
 #!/bin/bash
-# Поднимает стенд eQuasar для Яндекс Станции Лайт 1 (yandexmicro).
-# Запуск:  ./start.sh
+# Поднимает стенд eQuasar (DNS + HTTPS на :53/:80/:443) для Яндекс Станций.
+# Работает на Linux и macOS. Запуск: ./start.sh
 set -uo pipefail
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
-[ "$(id -u)" = 0 ] || exec sudo --preserve-env=SYNC_PROXY,COLUMN_IPS,LOCAL_IP,EQUASAR_MODE bash "$0" "$@"
+[ "$(id -u)" = 0 ] || exec sudo --preserve-env=SYNC_PROXY,COLUMN_IPS,LOCAL_IP,EQUASAR_MODE,SYNC_RETRIES,SYNC_RETRY_DELAY bash "$0" "$@"
 
-IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
-[ -z "$IP" ] && IP="$(ipconfig getifaddr en1 2>/dev/null || true)"
-if [ -z "$IP" ]; then echo "[!] не смог определить IP мака (en0/en1)"; exit 1; fi
+OS="$(uname -s)"
 
-DNSMASQ="$(command -v dnsmasq || echo /opt/homebrew/sbin/dnsmasq)"
-[ -x "$DNSMASQ" ] || { echo "[!] dnsmasq не найден: brew install dnsmasq"; exit 1; }
+# --- IP этой машины в локальной сети (не VPN, не docker) ---
+if [ "$OS" = "Darwin" ]; then
+    IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
+    [ -z "$IP" ] && IP="$(ipconfig getifaddr en1 2>/dev/null || true)"
+else
+    IFACE="$(ip route 2>/dev/null | awk '/^default/{print $5; exit}')"
+    [ -n "$IFACE" ] && IP="$(ip -4 addr show dev "$IFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)"
+    [ -z "${IP:-}" ] && IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+fi
+if [ -z "${IP:-}" ]; then echo "[!] не смог определить IP этой машины в локальной сети"; exit 1; fi
+
+DNSMASQ="$(command -v dnsmasq || true)"
+for c in /opt/homebrew/sbin/dnsmasq /usr/local/sbin/dnsmasq /usr/sbin/dnsmasq; do
+    [ -n "$DNSMASQ" ] && break
+    [ -x "$c" ] && DNSMASQ="$c"
+done
+[ -n "$DNSMASQ" ] && [ -x "$DNSMASQ" ] || {
+    echo "[!] dnsmasq не найден: apt install dnsmasq | pacman -S dnsmasq | brew install dnsmasq"; exit 1; }
 
 mkdir -p "$BASE/run" "$BASE/log"
 
@@ -29,13 +43,13 @@ sleep 1
 
 # --- какой питон брать: нужен OpenSSL >= 1.1.1 (TLS 1.3) ---
 PYBIN=""
-for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    [ -x "$c" ] || continue
+for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 "$(command -v python3 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] || continue
     if "$c" -c 'import ssl,sys; sys.exit(0 if ssl.OPENSSL_VERSION_INFO >= (1,1,1) else 1)' 2>/dev/null; then
         PYBIN="$c"; break
     fi
 done
-[ -z "$PYBIN" ] && PYBIN=/usr/bin/python3
+[ -z "$PYBIN" ] && PYBIN="$(command -v python3 || echo /usr/bin/python3)"
 echo "[*] python: $PYBIN ($("$PYBIN" -c 'import ssl; print(ssl.OPENSSL_VERSION)' 2>/dev/null))"
 export LOCAL_IP="${LOCAL_IP:-$IP}"
 # флаг-файл: touch run/sync_proxy — sync берётся у Яндекса и дополняется adbd
@@ -51,19 +65,19 @@ sleep 2
 
 echo
 echo "=== СТЕНД ПОДНЯТ ==="
-echo "  мак            : $IP"
+echo "  адрес машины   : $IP"
 echo "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $IP"
 echo "  сервер         : 80 и 443 (серты eMudhra)"
-  echo "  режим          : $(if [ -f "$BASE/run/downgrade" ]; then echo "откат на прошивку (downgrade)"; else echo "ADB, обновления заблокированы"; fi)"
+echo "  режим          : $(if [ -f "$BASE/run/downgrade" ]; then echo "откат на прошивку (downgrade)"; else echo "ADB, обновления заблокированы"; fi)"
 FW="$(ls "$BASE"/firmware/*.zip 2>/dev/null | head -1)"
 if [ -n "$FW" ]; then
     echo "  прошивка       : $(basename "$FW") ($(wc -c <"$FW" | tr -d ' ') б)"
 else
-    echo "  прошивка       : в firmware/ нет .zip (режим отката будет отдавать 404)"
+    echo "  прошивка       : в firmware/ нет .zip (раздача прошивки недоступна)"
 fi
 echo "  лог            : $BASE/log/server.log"
 echo
-echo "Проверка DNS (должно быть $IP):"
+echo "Проверка DNS на этой машине (должно быть $IP):"
 dig +short +time=3 @"$IP" quasar.yandex.net A 2>/dev/null || true
 echo
-echo "Дальше: включи на роутере DNS = $IP, потом сбрасывай колонку (см. README.md)."
+echo "Дальше: в роутере поставь DNS = $IP, потом сбрасывай колонку (см. README.md)."

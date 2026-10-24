@@ -1,7 +1,7 @@
 #!/bin/bash
 # test-ota.sh — проверка режима OTA-only: манифест, отдача файла, Range, crc32.
 #
-# Запуск на маке со стендом:
+# Запуск на машине со стендом (Linux/macOS):
 #   ./scripts/test-ota.sh                 # через 127.0.0.1
 #   ./scripts/test-ota.sh 192.168.0.109   # через свой IP
 set -u
