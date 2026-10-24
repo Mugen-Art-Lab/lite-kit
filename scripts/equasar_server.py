@@ -199,6 +199,20 @@ def sync_payload():
     return json.dumps(d, ensure_ascii=False).encode()
 
 
+OK_PAYLOAD = b'{"status":"ok"}'
+# 429/5xx Яндекса колонке не отдаём вообще: она считает это провалом активации.
+UPSTREAM_SOFT_ERRORS = (429,)
+
+
+def is_sync_path(path):
+    """Sync-подобный запрос: /get_sync_info, /sync, ... — отвечаем локально."""
+    return "sync" in (path or "").lower()
+
+
+def upstream_soft_error(status):
+    """Ответы, которые нельзя пробрасывать колонке (лимиты и перегрузка Яндекса)."""
+    return status in UPSTREAM_SOFT_ERRORS or status >= 500
+
 
 CACHE_DIR = os.path.join(BASE_DIR, "log", "cache")
 
@@ -241,11 +255,31 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, OSError):
             pass
 
+    def _send_json(self, payload, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(payload)
+
+    def _send_local_fallback(self, kind, why):
+        """Апстрим ответил 429/5xx — колонке всё равно отдаём 200.
+
+        kind="sync" — полный конфиг с adbd.remoteActivation=true,
+        иначе — короткий {"status":"ok"}, чтобы активация не срывалась.
+        """
+        payload = sync_payload() if kind == "sync" else OK_PAYLOAD
+        self._send_json(payload)
+        print(f"  >>> [FALLBACK] {why} — отдаю локально 200 "
+              f"({'sync + adbd:true' if kind == 'sync' else 'ok'}) <<<")
+
     def handle_request(self):
         clean_path = self.path.split("?")[0]
         if SYNC_PROXY and clean_path.startswith("/get_sync_info"):
             # диагностика: забираем настоящий ответ Яндекса и сохраняем для разбора
-            self.proxy_upstream(dump_path=os.path.join(BASE_DIR, "log", "sync_real.json"))
+            self.proxy_upstream(dump_path=os.path.join(BASE_DIR, "log", "sync_real.json"),
+                                fallback="sync")
             return
         if MODE_PASSTHROUGH:
             # режим «сквозь»: ничего не подменяем, просто проксируем в настоящий Яндекс
@@ -323,12 +357,12 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if "get_sync_info" in clean_path.lower():
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            _p = sync_payload()
-            self.send_header("Content-Length", str(len(_p)))
-            self.end_headers()
-            self.wfile.write(_p)
+            try:
+                _p = sync_payload()
+            except Exception as e:
+                print(f"  !!! [SYNC] шаблон сломан ({e!r}), отдаю встроенный")
+                _p = SYNC_INFO_PAYLOAD
+            self._send_json(_p)
             print("  >>> [SUCCESS] Колонке отправлена команда активации ADB! <<<")
             return
             
@@ -359,7 +393,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             
         # Всё остальное (/register, /get_config, ...) — пробрасываем в настоящий Яндекс,
         # иначе колонка получает "OK" вместо реального ответа и ругается "что-то не так".
-        self.proxy_upstream()
+        # Но 429/5xx от Яндекса колонке не отдаём: она принимает это за провал синка.
+        self.proxy_upstream(fallback="sync" if is_sync_path(self.path) else "ok")
 
     def serve_ota(self):
         """Отдача локального OTA-файла с поддержкой Range (колонка качает кусками)."""
@@ -415,6 +450,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         cache = _cache_file(key)
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
         ip = real_ip(host)
+        kind = "sync" if is_sync_path(self.path) else "ok"
         body = None
         if self.command in ("POST", "PUT"):
             n = int(self.headers.get("Content-Length") or 0)
@@ -450,9 +486,13 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            # кэша нет, а Яндекс ответил 429/5xx — колонке отдаём локальный 200
+            if upstream_soft_error(r.status):
+                self._send_local_fallback(kind, f"upstream {r.status} на {self.path}")
+                return
             self.send_response(r.status)
             self.end_headers()
-        except Exception:
+        except Exception as e:
             if os.path.exists(cache):
                 with open(cache, "rb") as f:
                     data = f.read()
@@ -462,10 +502,9 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
-            self.send_response(502)
-            self.end_headers()
+            self._send_local_fallback(kind, f"нет связи с Яндексом ({e!r})")
 
-    def proxy_upstream(self, dump_path=None):
+    def proxy_upstream(self, dump_path=None, fallback=None):
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
         ip = real_ip(host)
         try:
@@ -480,13 +519,19 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             conn.request(self.command, self.path, body=body, headers=hdrs)
             r = conn.getresponse()
             data = r.read()
-            if dump_path:
+            if dump_path and r.status == 200:
                 try:
                     with open(dump_path, "wb") as f:
                         f.write(data)
                     print(f"  >>> [DUMP] настоящий ответ сохранён: {dump_path} ({len(data)}b)")
                 except OSError as e:
                     print(f"  >>> [DUMP] не смог сохранить: {e}")
+            elif dump_path:
+                print(f"  >>> [DUMP] пропущен: Яндекс ответил {r.status}, в шаблон не пишем")
+            # лимит/перегрузка Яндекса не должна долетать до колонки
+            if fallback and upstream_soft_error(r.status):
+                self._send_local_fallback(fallback, f"upstream {r.status} на {self.path}")
+                return
             self.send_response(r.status)
             for k, v in r.getheaders():
                 if k.lower() in ("content-type", "content-length", "cache-control", "etag", "last-modified"):
@@ -499,6 +544,9 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             print(f"  >>> [PROXY] {self.command} {self.path} -> {r.status} ({len(data)}b) <<<")
             sys.stdout.flush()
         except Exception as e:
+            if fallback:
+                self._send_local_fallback(fallback, f"нет связи с Яндексом ({e!r})")
+                return
             self.send_response(502)
             self.send_header("Content-Length", "2")
             self.end_headers()
