@@ -123,10 +123,23 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 fetch "$URL/metadata.json" > "$TMP/metadata.json" || echo "[!] metadata.json не найден, продолжу без него"
-fetch "$URL/update.zip" > "$TMP/update.zip" || { echo "[!] не смог скачать update.zip"; exit 1; }
+fetch "$URL/update.zip" > "$TMP/update.zip" || echo "[!] зеркало не отдало update.zip"
 
-SIZE=$(wc -c < "$TMP/update.zip" | tr -d ' ')
-[ "$SIZE" -gt 1000000 ] || { echo "[!] файл подозрительно маленький ($SIZE б) — похоже, это не прошивка"; exit 1; }
+SIZE=$(wc -c < "$TMP/update.zip" 2>/dev/null | tr -d ' ')
+if [ "${SIZE:-0}" -lt 1000000 ]; then
+    # зеркало бывает битым/обрезанным (отдаёт ~33 КБ вместо 60 МБ) —
+    # берём официальный URL из metadata.json
+    ALT1=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("downloadUrl",""))' "$TMP/metadata.json" 2>/dev/null || true)
+    ALT2=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("fallbackUrl",""))' "$TMP/metadata.json" 2>/dev/null || true)
+    for ALT in "$ALT1" "$ALT2"; do
+        [ -n "$ALT" ] || continue
+        echo "[*] зеркало отдало ${SIZE:-0} б — качаю с официального URL: $ALT"
+        curl -fsSL --retry 3 --connect-timeout 15 -o "$TMP/update.zip" "$ALT" || continue
+        SIZE=$(wc -c < "$TMP/update.zip" | tr -d ' ')
+        [ "$SIZE" -gt 1000000 ] && break
+    done
+fi
+[ "${SIZE:-0}" -gt 1000000 ] || { echo "[!] не удалось получить прошивку (размер ${SIZE:-0} б)"; exit 1; }
 
 # контрольные суммы
 read -r CRC SHA < <("$PY" - "$TMP/update.zip" <<'PY'

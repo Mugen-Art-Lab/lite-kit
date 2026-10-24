@@ -116,10 +116,31 @@ try {
     Write-Host "[!] metadata.json не найден, продолжу без него"
 }
 
-Invoke-WebRequest -Uri "$url/update.zip" -UseBasicParsing -OutFile $zipPath -TimeoutSec 900
+try {
+    Invoke-WebRequest -Uri "$url/update.zip" -UseBasicParsing -OutFile $zipPath -TimeoutSec 900
+} catch {
+    Write-Host "[!] зеркало не отдало update.zip"
+}
 
-$size = (Get-Item $zipPath).Length
-if ($size -lt 1000000) { Write-Host "[!] файл слишком маленький ($size б) - это не прошивка"; exit 1 }
+$size = 0
+if (Test-Path $zipPath) { $size = (Get-Item $zipPath).Length }
+if ($size -lt 1000000) {
+    # зеркало бывает обрезанным (~33 КБ вместо 60 МБ) — берём официальный URL из metadata.json
+    $alts = @()
+    if ($meta) {
+        if ($meta.downloadUrl) { $alts += $meta.downloadUrl }
+        if ($meta.fallbackUrl) { $alts += $meta.fallbackUrl }
+    }
+    foreach ($alt in $alts) {
+        Write-Host "[*] зеркало отдало $size б — качаю с официального URL: $alt"
+        try {
+            Invoke-WebRequest -Uri $alt -UseBasicParsing -OutFile $zipPath -TimeoutSec 900
+            $size = (Get-Item $zipPath).Length
+            if ($size -gt 1000000) { break }
+        } catch { }
+    }
+}
+if ($size -lt 1000000) { Write-Host "[!] не удалось получить прошивку (размер $size б)"; exit 1 }
 
 $sha = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLower()
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
