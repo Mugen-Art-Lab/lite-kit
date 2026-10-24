@@ -6,3 +6,4 @@ frames/
 firmware/*.zip
 __pycache__/
 .DS_Store
+certs/*.bak*
