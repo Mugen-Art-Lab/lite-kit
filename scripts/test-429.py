@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Проверка: ошибки Яндекса (429/5xx/обрыв) не долетают до колонки.
+
+Поднимает сервер на 127.0.0.1 со замоканным апстримом и гоняет сценарии.
+Запуск: python3 scripts/test-429.py   (нужен любой python3, без зависимостей)
+"""
+import http.client
+import json
+import os
+import shutil
+import sys
+import tempfile
+import threading
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import equasar_server as es
+
+UPSTREAM = {"mode": "429", "body": b'{"status":"limited","message":"Too Many Requests"}'}
+
+
+class FakeResp:
+    status = 200
+
+    def __init__(self, status, body):
+        self.status = status
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def getheader(self, name, default=None):
+        return "application/json" if name.lower() == "content-type" else default
+
+    def getheaders(self):
+        return [("Content-Type", "application/json")]
+
+
+class FakeConn:
+    def __init__(self, host, ip, **kw):
+        pass
+
+    def request(self, method, path, body=None, headers=None):
+        pass
+
+    def getresponse(self):
+        m = UPSTREAM["mode"]
+        if m == "boom":
+            raise OSError("connection reset by peer")
+        if m == "200":
+            return FakeResp(200, b'{"proxied":true}')
+        if m == "404":
+            return FakeResp(404, b'{"error":"not found"}')
+        return FakeResp(int(m), UPSTREAM["body"])
+
+
+es.PinnedHTTPS = FakeConn
+es.real_ip = lambda host="quasar.yandex.net": "127.0.0.1"
+es.CACHE_DIR = tempfile.mkdtemp(prefix="eqcache-")
+es.SYNC_DUMP = os.path.join(es.CACHE_DIR, "sync_real.json")
+
+srv = es.ReusableServer(("127.0.0.1", 0), es.EquasarHandler)
+PORT = srv.server_address[1]
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
+def call(method, path, body=None):
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+    c.request(method, path, body=body, headers={"Host": "quasar.yandex.net"})
+    r = c.getresponse()
+    data = r.read()
+    c.close()
+    return r.status, data
+
+
+def adbd_of(data):
+    try:
+        return json.loads(data).get("config", {}).get("system_config", {}).get("adbd")
+    except Exception:
+        return None
+
+
+FAILS = []
+
+
+def case(name, mode, method, path, want_code=200, want_adbd=None,
+         want_body=None, setup=None, cleanup=None):
+    UPSTREAM["mode"] = mode
+    if setup:
+        setup()
+    try:
+        code, data = call(method, path)
+    finally:
+        if cleanup:
+            cleanup()
+    adbd = adbd_of(data)
+    ok = code == want_code
+    if want_adbd is not None:
+        ok = ok and bool(adbd and adbd.get("remoteActivation") is True) == want_adbd
+    if want_body is not None:
+        ok = ok and data == want_body
+    if not ok:
+        FAILS.append(name)
+    print(f"{'ok  ' if ok else 'FAIL'} {name:52} -> {code} "
+          f"adbd={bool(adbd and adbd.get('remoteActivation'))} {data[:60]!r}")
+
+
+def cache_for(path):
+    def put():
+        os.makedirs(es.CACHE_DIR, exist_ok=True)
+        with open(es._cache_file(path), "wb") as f:
+            f.write(b'{"cached":true}')
+    return put
+
+
+def drop_cache(path):
+    def rm():
+        try:
+            os.remove(es._cache_file(path))
+        except OSError:
+            pass
+    return rm
+
+
+# --- sync всегда локальный: 200 + adbd:true, без обращения в Яндекс ---
+for mode in ("429", "500", "boom", "200", "404"):
+    case(f"sync /get_sync_info при upstream {mode}", mode, "GET",
+         "/get_sync_info?device_id=LP00&platform=yandexmicro", want_adbd=True)
+case("sync /get_sync_info без query", "429", "GET", "/get_sync_info", want_adbd=True)
+case("sync POST /get_sync_info", "429", "POST", "/get_sync_info", want_adbd=True)
+
+# --- кэшируемые пути /glagol, /telemetry, /metrics ---
+case("glagol 429 без кэша -> мягкий 200", "429", "GET", "/glagol/device_list",
+     want_body=b'{"status":"ok"}', cleanup=drop_cache("/glagol/device_list"))
+case("glagol 429 с кэшем -> кэш", "429", "GET", "/glagol/device_list",
+     want_body=b'{"cached":true}', setup=cache_for("/glagol/device_list"),
+     cleanup=drop_cache("/glagol/device_list"))
+case("glagol 503 без кэша -> мягкий 200", "503", "GET", "/glagol/x",
+     want_body=b'{"status":"ok"}', cleanup=drop_cache("/glagol/x"))
+case("glagol обрыв связи -> мягкий 200", "boom", "GET", "/glagol/x",
+     want_body=b'{"status":"ok"}', cleanup=drop_cache("/glagol/x"))
+case("telemetry 429 -> мягкий 200", "429", "POST", "/telemetry/x",
+     want_body=b'{"status":"ok"}', cleanup=drop_cache("/telemetry/x"))
+case("metrics 429 -> мягкий 200", "429", "POST", "/metrics/x",
+     want_body=b'{"status":"ok"}', cleanup=drop_cache("/metrics/x"))
+case("glagol 200 -> проксируется как есть", "200", "GET", "/glagol/x",
+     want_body=b'{"proxied":true}', cleanup=drop_cache("/glagol/x"))
+
+# --- прочие пути: 429 -> 200 ok, sync-подобные -> 200 + adbd ---
+case("неизвестный путь 429 -> 200 ok", "429", "POST", "/v1/whatever",
+     want_body=b'{"status":"ok"}')
+case("sync-путь 429 -> 200 + adbd", "429", "POST", "/v1/sync",
+     want_adbd=True)
+case("неизвестный путь 404 пробрасывается", "404", "GET", "/v1/whatever",
+     want_code=404)
+case("неизвестный путь 200 проксируется", "200", "GET", "/v1/whatever",
+     want_body=b'{"proxied":true}')
+
+# --- локальные заглушки ---
+case("POST /register локальный", "429", "POST", "/register",
+     want_body=b'{"message":"allvalid","status":"ok"}')
+case("POST /set_device_capability", "429", "POST", "/set_device_capability",
+     want_body=b'{"status":"ok"}')
+case("POST /update_device_state", "429", "POST", "/update_device_state",
+     want_body=b'{"status":"ok"}')
+
+# --- диагностика SYNC_PROXY: 429 не пишется в дамп, колонке всё равно adbd ---
+def _no_dump():
+    try:
+        os.remove(es.SYNC_DUMP)
+    except OSError:
+        pass
+
+
+es.SYNC_PROXY = True
+_no_dump()
+case("SYNC_PROXY: 429 -> adbd, дамп не пишется", "429", "GET",
+     "/get_sync_info?device_id=LP00", want_adbd=True)
+dump_written = os.path.exists(es.SYNC_DUMP)
+es.SYNC_PROXY = False
+if dump_written:
+    FAILS.append("SYNC_PROXY: дамп 429 записан")
+print(f"{'ok  ' if not dump_written else 'FAIL'} "
+      f"{'SYNC_PROXY: 429 не попал в sync_real.json':52} -> dump={dump_written}")
+
+# --- OTA: HEAD / Range на фейковой прошивке ---
+_ota_dir = tempfile.mkdtemp(prefix="eqota-")
+_zip = os.path.join(_ota_dir, "0.369.1.46.4778262442.20261013.297.zip")
+with open(_zip, "wb") as f:
+    f.write(b"PK\x03\x04" + b"\0" * 4092)
+es.OTA_FILE = _zip
+es.OTA_PREFIX = "/yandexmicro/ota/"
+
+case("OTA HEAD 200 + размер", "429", "HEAD",
+     "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip", want_code=200)
+UPSTREAM["mode"] = "429"
+code, data = call("GET", "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip")
+ok = code == 200 and len(data) == 4096
+if not ok:
+    FAILS.append("OTA полная отдача")
+print(f"{'ok  ' if ok else 'FAIL'} {'OTA отдаётся целиком':52} -> {code} {len(data)}b")
+
+c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+c.request("GET", "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip",
+          headers={"Host": "quasar.yandex.net", "Range": "bytes=0-1023"})
+r = c.getresponse()
+data = r.read()
+ok = r.status == 206 and len(data) == 1024
+if not ok:
+    FAILS.append("OTA Range 206")
+print(f"{'ok  ' if ok else 'FAIL'} {'OTA Range -> 206, 1024б':52} -> {r.status} {len(data)}b")
+c.close()
+
+shutil.rmtree(_ota_dir, ignore_errors=True)
+shutil.rmtree(es.CACHE_DIR, ignore_errors=True)
+
+print("\nИТОГО:", "ВСЁ ЗЕЛЁНОЕ" if not FAILS else "ПАДЕНИЯ: " + ", ".join(FAILS))
+sys.exit(0 if not FAILS else 1)
