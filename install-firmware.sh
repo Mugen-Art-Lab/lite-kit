@@ -48,6 +48,12 @@ fi
 PLATS=()
 while IFS= read -r line; do PLATS+=("$line"); done < <(fetch "$MIRROR/" | dirs)
 
+# -p 3 — тоже можно: номер из меню
+if [[ "$PLATFORM" =~ ^[0-9]+$ ]]; then
+    PLATFORM="${PLATS[$((PLATFORM-1))]:-}"
+    [ -n "$PLATFORM" ] || { echo "[!] нет платформы с таким номером"; exit 1; }
+fi
+
 if [ -z "$PLATFORM" ]; then
     [ "${#PLATS[@]}" -gt 0 ] || { echo "[!] не получил список платформ с $MIRROR"; exit 1; }
     echo "Зеркало: $MIRROR"
@@ -78,6 +84,12 @@ def key(v):
 rows=[r.strip() for r in sys.stdin if r.strip()]
 print("\n".join(sorted(rows, key=key, reverse=True)))')
 [ "${#VERS[@]}" -gt 0 ] || { echo "[!] нет версий в $VERSIONS_URL"; exit 1; }
+
+# -v 5 — номер версии из списка
+if [[ "$VERSION" =~ ^[0-9]+$ ]]; then
+    VERSION="${VERS[$((VERSION-1))]:-}"
+    [ -n "$VERSION" ] || { echo "[!] нет версии с таким номером"; exit 1; }
+fi
 
 if [ -z "$VERSION" ]; then
     echo "Выбери версию (сверху новые):"

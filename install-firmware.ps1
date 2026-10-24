@@ -39,6 +39,13 @@ if ($List) {
     exit 0
 }
 
+# -Platform 3 — номер из меню
+if ($Platform -match '^[0-9]+$') {
+    $pi = [int]$Platform
+    if ($pi -lt 1 -or $pi -gt $plats.Count) { Write-Host "[!] нет платформы с таким номером"; exit 1 }
+    $Platform = $plats[$pi - 1]
+}
+
 if (-not $Platform) {
     if ($plats.Count -eq 0) { Write-Host "[!] не получил список платформ с $Mirror"; exit 1 }
     Write-Host "Зеркало: $Mirror"
@@ -65,6 +72,13 @@ $known = @{
     "yandexmini"  = "1.305.4.16.3237824040.20250721"
 }
 $knownVersion = $known[$Platform]
+
+# -Version 5 — номер из списка
+if ($Version -match '^[0-9]+$') {
+    $vi = [int]$Version
+    if ($vi -lt 1 -or $vi -gt $versions.Count) { Write-Host "[!] нет версии с таким номером"; exit 1 }
+    $Version = $versions[$vi - 1]
+}
 
 if (-not $Version) {
     Write-Host "Выбери версию (сверху новые):"
