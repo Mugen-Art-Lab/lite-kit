@@ -410,11 +410,16 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         kind="sync" — полный конфиг с adbd.remoteActivation=true,
         иначе — короткий {"status":"ok"}, чтобы активация не срывалась.
         """
-        payload = sync_payload() if kind == "sync" else OK_PAYLOAD
+        if kind == "register":
+            payload = b'{"message":"allvalid","status":"ok"}'   # чтобы колонка не долбила /register
+        elif kind == "sync":
+            payload = sync_payload()
+        else:
+            payload = OK_PAYLOAD
         self._send_json(payload)
         log_local(f"FALLBACK {self.path}: {why}")
-        print(f"  >>> [FALLBACK] {why} — отдаю локально 200 "
-              f"({'sync + adbd:true' if kind == 'sync' else 'ok'}) <<<")
+        _what = {"sync": "sync + adbd:true", "register": "allvalid", "ok": "ok"}.get(kind, "ok")
+        print(f"  >>> [FALLBACK] {why} — отдаю локально 200 ({_what}) <<<")
         if kind == "sync":
             self._log_payload("SYNC→", payload, "локальный шаблон (fallback)")
 
@@ -552,13 +557,15 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(payload)
                 return
             # во всех остальных случаях спрашиваем настоящий Яндекс и отдаём его ответ как есть
-            self.proxy_upstream(fallback="sync" if is_sync_path(self.path) else "ok")
+            _fb = "sync" if is_sync_path(self.path) else ("register" if "register" in path_l else "ok")
+            self.proxy_upstream(fallback=_fb)
             return
             
         # Всё остальное (/register, /get_config, ...) — пробрасываем в настоящий Яндекс,
         # иначе колонка получает "OK" вместо реального ответа и ругается "что-то не так".
         # Но 429/5xx от Яндекса колонке не отдаём: она принимает это за провал синка.
-        self.proxy_upstream(fallback="sync" if is_sync_path(self.path) else "ok")
+        _fb = "sync" if is_sync_path(self.path) else ("register" if "register" in path_l else "ok")
+        self.proxy_upstream(fallback=_fb)
 
     def serve_ota(self):
         """Отдача локального OTA-файла с поддержкой Range (колонка качает кусками)."""
