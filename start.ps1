@@ -59,21 +59,25 @@ if ($env:SYNC_RETRIES) { $env:SYNC_RETRIES = $env:SYNC_RETRIES }
 if ($env:SYNC_RETRY_DELAY) { $env:SYNC_RETRY_DELAY = $env:SYNC_RETRY_DELAY }
 
 # --- запуск сервера (лог в log\server.log) ---
-# pythonw не цепляется к консоли, поэтому start.ps1 не «висит» на её stdout
+# создаём процесс через WMI: он не наследует консольные хендлы, и start.ps1 не «висит»
 $pyw = Join-Path (Split-Path -Parent $py) "pythonw.exe"
 if (Test-Path $pyw) { $py = $pyw }
-$proc = Start-Process -FilePath $py -ArgumentList $argl -WorkingDirectory $Base `
-        -RedirectStandardOutput "$Base\log\server.log" -RedirectStandardError "$Base\log\server.err.log" `
-        -WindowStyle Hidden -PassThru
-$proc.Id | Out-File -Encoding ascii "$Base\run\server.pid"
+$cmdline = '"' + $py + '" ' + ($argl -join ' ') + ' >> "' + $Base + '\log\server.log" 2>> "' + $Base + '\log\server.err.log"'
+$null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine = $cmdline
+    CurrentDirectory = $Base
+}
 Start-Sleep -Seconds 3
 
-if ($proc.HasExited) {
-    Write-Host "[!] сервер упал (код $($proc.ExitCode)):"
+$srvProc = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*equasar_server.py*" } | Select-Object -First 1
+if (-not $srvProc) {
+    Write-Host "[!] сервер не запустился:"
     Get-Content "$Base\log\server.err.log" -Tail 20 -ErrorAction SilentlyContinue
     Get-Content "$Base\log\server.log" -Tail 20 -ErrorAction SilentlyContinue
     exit 1
 }
+$srvProc.ProcessId | Out-File -Encoding ascii "$Base\run\server.pid"
 
 Write-Host ""
 Write-Host "=== СТЕНД ПОДНЯТ ==="
