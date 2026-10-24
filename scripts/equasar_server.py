@@ -115,6 +115,18 @@ def _guess_platform(name):
     return "yandexstation"
 
 
+def ota_platform():
+    """Платформа прошивки: из firmware/manifest.json (его пишет install-firmware),
+    иначе из имени файла. По версии модель НЕ определить: у mini_2, midi, plum тоже 0.x."""
+    try:
+        m = json.load(open(os.path.join(BASE_DIR, "firmware", "manifest.json"), encoding="utf-8"))
+        if m.get("platform"):
+            return m["platform"]
+    except Exception:
+        pass
+    return _guess_platform(OTA_FILE) if OTA_FILE else ""
+
+
 # версия и модель берутся ИЗ ИМЕНИ ФАЙЛА — манифест в firmware/ может быть устаревшим
 OTA_VERSION = _OTA_NAME[:-4] if _OTA_NAME.endswith(".zip") else _OTA_NAME
 OTA_PLATFORM = _guess_platform(_OTA_NAME)
@@ -506,7 +518,9 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # --- раздача OTA со своего диска (кусками, с Range) ---
-        if clean_path.endswith(".zip") or clean_path.startswith(OTA_PREFIX):
+        _pfx = "/%s/ota/" % (ota_platform() or OTA_PLATFORM)
+        _pfx = "/%s/ota/" % (ota_platform() or OTA_PLATFORM)
+        if clean_path.endswith(".zip") or clean_path.startswith(_pfx):
             if MODE_OTA_ONLY or (OTA_FILE and not no_downgrade()):
                 self.serve_ota()
             else:
@@ -559,7 +573,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 plat = (q.get("platform") or [""])[0]
             except Exception:
                 pass
-            _plat_now = _guess_platform(os.path.basename(OTA_FILE)) if OTA_FILE else OTA_PLATFORM
+            _plat_now = ota_platform()
             if plat and OTA_FILE and plat != _plat_now:
                 # прошивка в firmware/ для другой модели — не подсовываем
                 print(f"  >>> [OTA] платформа колонки {plat} != прошивки {_plat_now} — проксирую в Яндекс <<<")
