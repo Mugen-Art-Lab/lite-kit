@@ -62,9 +62,16 @@ if ($env:SYNC_RETRY_DELAY) { $env:SYNC_RETRY_DELAY = $env:SYNC_RETRY_DELAY }
 # создаём процесс через WMI: он не наследует консольные хендлы, и start.ps1 не «висит»
 $pyw = Join-Path (Split-Path -Parent $py) "pythonw.exe"
 if (Test-Path $pyw) { $py = $pyw }
-$cmdline = '"' + $py + '" ' + ($argl -join ' ') + ' >> "' + $Base + '\log\server.log" 2>> "' + $Base + '\log\server.err.log"'
+# launcher-файл: так надёжно работают кавычки и перенаправление логов
+$launcher = "$Base\run\server.cmd"
+$lines = @(
+    "@echo off",
+    "cd /d `"$Base`"",
+    "`"$py`" " + ($argl -join " ") + " >> `"$Base\log\server.log`" 2>> `"$Base\log\server.err.log`""
+)
+Set-Content -Path $launcher -Value $lines -Encoding ascii
 $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-    CommandLine = $cmdline
+    CommandLine = "cmd.exe /c `"$launcher`""
     CurrentDirectory = $Base
 }
 Start-Sleep -Seconds 3
