@@ -290,6 +290,14 @@ def log_dns(msg):
     _log_to("dns.log", msg)
 
 
+def _dns_name(qname):
+    """Имя из DNS-запроса для лога (idna-кодек не принимает errors=...)."""
+    try:
+        return (qname or b"?").decode("ascii", "replace")
+    except Exception:
+        return "?"
+
+
 def _cache_file(path_qs):
     import hashlib
     return os.path.join(CACHE_DIR, hashlib.sha1(path_qs.encode()).hexdigest() + ".cache")
@@ -813,10 +821,9 @@ def _dns_handle(query, client_ip=None):
         # A спрашивают -> отдаём свой IP (или несколько); AAAA и остальное -> NODATA
         ips = _best_ips(client_ip) if qtype == 1 else []
         log_dns(f"{client_ip or '-'} {'A' if qtype == 1 else 'TYPE' + str(qtype)} "
-                f"{(qname or b'?').decode('idna', 'replace')} -> "
-                f"{','.join(ips) if ips else 'NODATA'}")
+                f"{_dns_name(qname)} -> {','.join(ips) if ips else 'NODATA'}")
         return _dns_reply(query, ips) if ips else _dns_reply(query)
-    log_dns(f"{client_ip or '-'} FORWARD {(qname or b'?').decode('idna', 'replace')} (type {qtype})")
+    log_dns(f"{client_ip or '-'} FORWARD {_dns_name(qname)} (type {qtype})")
     return _dns_forward(query) or _dns_reply(query)
 
 
