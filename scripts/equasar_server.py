@@ -689,6 +689,136 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             print(f"  !!! [PROXY] ошибка {self.path}: {e!r}")
             sys.stdout.flush()
 
+# --- встроенный DNS (Windows: dnsmasq там нет) ---
+DNS_NAMES = {b"quasar.yandex.net", b"quasar.yandex.ru", b"scbh.yandex.net"}
+DNS_UPSTREAMS = [("1.1.1.1", 53), ("8.8.8.8", 53), ("77.88.8.8", 53)]
+
+
+def _dns_qname(data):
+    """Возвращает (имя в нижнем регистре, qtype) или (None, None)."""
+    try:
+        if len(data) < 12:
+            return None, None
+        i = 12
+        labels = []
+        while i < len(data) and data[i]:
+            n = data[i]
+            if n & 0xC0:
+                return None, None
+            labels.append(data[i + 1:i + 1 + n])
+            i += 1 + n
+        qtype = int.from_bytes(data[i + 1:i + 3], "big") if i + 3 <= len(data) else None
+        return b".".join(labels).lower(), qtype
+    except Exception:
+        return None, None
+
+
+def _dns_reply(query, an_ip=None):
+    """Ответ: an_ip задан -> A-запись; иначе NODATA (для AAAA и прочего)."""
+    qname, qtype = _dns_qname(query)
+    question = query[12:]
+    # обрезаем question ровно до конца QNAME + 4 байта (qtype+qclass)
+    i = 12
+    while i < len(query) and query[i]:
+        i += 1 + query[i]
+    qend = min(len(query), i + 5)
+    question = query[12:qend]
+    flags = b"\x81\x80"                     # ответ, рекурсия доступна
+    if an_ip is not None:
+        header = query[:2] + flags + b"\x00\x01\x00\x01\x00\x00\x00\x00"
+        answer = (b"\xc0\x0c" + b"\x00\x01" + b"\x00\x01" +
+                  int(os.environ.get("DNS_TTL", "60")).to_bytes(4, "big") +
+                  b"\x00\x04" + socket.inet_aton(an_ip))
+        return header + question + answer
+    header = query[:2] + flags + b"\x00\x01\x00\x00\x00\x00\x00\x00"
+    return header + question
+
+
+def _dns_forward(query):
+    for host, port in DNS_UPSTREAMS:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(2)
+            s.sendto(query, (host, port))
+            data, _ = s.recvfrom(4096)
+            s.close()
+            return data
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return None
+
+
+def _dns_handle(query):
+    qname, qtype = _dns_qname(query)
+    if qname in DNS_NAMES:
+        # A спрашивают -> отдаём свой IP; AAAA и остальное -> NODATA (чтобы не ушли в IPv6)
+        if qtype == 1:
+            return _dns_reply(query, LOCAL_IP)
+        return _dns_reply(query)
+    return _dns_forward(query) or _dns_reply(query)
+
+
+def run_dns(port=53):
+    try:
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp.bind(("0.0.0.0", port))
+        print(f"[*] DNS сервер слушает UDP {port} (quasar.* -> {LOCAL_IP})")
+        sys.stdout.flush()
+
+        def udp_loop():
+            while True:
+                try:
+                    data, addr = udp.recvfrom(4096)
+                    if data:
+                        udp.sendto(_dns_handle(data), addr)
+                except Exception as e:
+                    print(f"[!] DNS UDP: {e!r}")
+
+        threading.Thread(target=udp_loop, daemon=True).start()
+
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind(("0.0.0.0", port))
+        tcp.listen(16)
+
+        while True:
+            try:
+                conn, _ = tcp.accept()
+            except Exception:
+                continue
+            threading.Thread(target=_dns_tcp_conn, args=(conn,), daemon=True).start()
+    except Exception as e:
+        print(f"[!] Ошибка запуска DNS на порту {port}: {e}")
+
+
+def _dns_tcp_conn(conn):
+    try:
+        conn.settimeout(5)
+        head = conn.recv(2)
+        if len(head) < 2:
+            return
+        n = int.from_bytes(head, "big")
+        data = b""
+        while len(data) < n:
+            chunk = conn.recv(n - len(data))
+            if not chunk:
+                break
+            data += chunk
+        resp = _dns_handle(data)
+        conn.sendall(len(resp).to_bytes(2, "big") + resp)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 class ReusableServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
@@ -738,6 +868,8 @@ def main():
                         help="Только прошивка (Mini): отдавать манифест и zip, всё остальное — в Яндекс")
     parser.add_argument("--passthrough", action="store_true",
                         help="Прозрачный режим: всё проксируется в настоящий Яндекс (для диагностики TLS)")
+    parser.add_argument("--dns", action="store_true",
+                        help="Поднять встроенный DNS на :53 (Windows; на Linux/macOS обычно dnsmasq)")
     args = parser.parse_args()
 
     if args.downgrade or os.environ.get("EQUASAR_MODE") == "downgrade":
@@ -782,13 +914,21 @@ def main():
     _sp = int(os.environ.get("HTTPS_PORT", "443"))
     t_http = threading.Thread(target=run_http, args=(_hp,), daemon=True)
     t_https = threading.Thread(target=run_https, args=(cert_path, key_path, _sp), daemon=True)
+    t_dns = None
+    if args.dns or os.environ.get("BUILTIN_DNS") == "1":
+        _dp = int(os.environ.get("DNS_PORT", "53"))
+        t_dns = threading.Thread(target=run_dns, args=(_dp,), daemon=True)
 
     t_http.start()
     t_https.start()
+    if t_dns:
+        t_dns.start()
 
     try:
         t_http.join()
         t_https.join()
+        if t_dns:
+            t_dns.join()
     except KeyboardInterrupt:
         print("\n[*] Сервер остановлен.")
 
