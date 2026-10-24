@@ -178,12 +178,12 @@ case("POST /update_device_state -> в Яндекс", "200", "POST", "/update_dev
 
 # --- авто-раздача прошивки: включена, если версия колонки не совпадает ---
 _saved_ota, _saved_ver = es.OTA_FILE, es.OTA_VERSION
-_fw = os.path.join(es.CACHE_DIR, "1.2.3.4.zip")
+_fw = os.path.join(es.CACHE_DIR, "0.1.2.3.zip")
 os.makedirs(es.CACHE_DIR, exist_ok=True)
 with open(_fw, "wb") as f:
     f.write(b"PK\x03\x04" + b"\0" * 2048)
 es.OTA_FILE = _fw
-es.OTA_VERSION = "1.2.3.4"
+es.OTA_VERSION = "0.1.2.3"
 
 
 def _fw_case(name, version, want_update, block=False):
@@ -201,9 +201,9 @@ def _fw_case(name, version, want_update, block=False):
     print(f"{'ok  ' if ok else 'FAIL'} {name:52} -> {code} hasUpdate={got}")
 
 
-_fw_case("авто-прошивка: версия другая -> манифест", "1.0.0", True)
-_fw_case("авто-прошивка: версия совпала -> hasUpdate:false", "1.2.3.4", False)
-_fw_case("авто-прошивка: run/no_downgrade -> выкл", "1.0.0", False, block=True)
+_fw_case("авто-прошивка: версия другая -> манифест", "0.0.9", True)
+_fw_case("авто-прошивка: версия совпала -> hasUpdate:false", "0.1.2.3", False)
+_fw_case("авто-прошивка: run/no_downgrade -> выкл", "0.0.9", False, block=True)
 
 es.OTA_FILE = None
 code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
@@ -211,6 +211,15 @@ ok = code == 200 and data == b'{"proxied":true}'
 if not ok:
     FAILS.append("авто-прошивка: нет файла -> в Яндекс")
 print(f"{'ok  ' if ok else 'FAIL'} {'авто-прошивка: нет файла -> ответ Яндекса':52} -> {code}")
+
+# прошивка 0.x (yandexmicro) не должна предлагаться колонке yandexmini
+es.OTA_FILE = _fw
+es.OTA_VERSION = "0.1.2.3"
+code, data = call("GET", "/check_updates?device_id=LP00&version=0.0.9&platform=yandexmini")
+ok = code == 200 and data == b'{"proxied":true}'
+if not ok:
+    FAILS.append("платформа не совпала -> в Яндекс")
+print(f"{'ok  ' if ok else 'FAIL'} {'другая платформа -> ответ Яндекса':52} -> {code}")
 
 es.OTA_FILE, es.OTA_VERSION = _saved_ota, _saved_ver
 case("check_updates без прошивки -> ответ Яндекса", "200", "GET",

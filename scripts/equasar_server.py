@@ -101,9 +101,18 @@ _OTA_NAME = os.path.basename(OTA_FILE) if OTA_FILE else ""
 
 
 def _guess_platform(name):
-    """0.xxx — Lite/Micro, 1.xxx — Mini/Midi (по ветке версии в имени файла)."""
+    """Платформа по имени файла прошивки.
+
+    0.x  -> yandexmicro (Лайт 1)
+    1.3x -> yandexmini  (Мини 1)
+    иначе 1.x -> yandexstation
+    """
     b = os.path.basename(name or "")
-    return "yandexstation" if b.startswith("1.") else "yandexmicro"
+    if b.startswith("0."):
+        return "yandexmicro"
+    if b.startswith("1.3"):
+        return "yandexmini"
+    return "yandexstation"
 
 
 # версия и модель берутся ИЗ ИМЕНИ ФАЙЛА — манифест в firmware/ может быть устаревшим
@@ -542,12 +551,20 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             # Предлагаем обновление ВСЕГДА, пока колонка не на этой версии.
             # Если попытка не удалась — она осталась на старой версии и получит предложение снова.
             cur = ""
+            plat = ""
             try:
                 import urllib.parse as _u
                 q = _u.parse_qs(_u.urlparse(self.path).query)
                 cur = (q.get("version") or [""])[0]
+                plat = (q.get("platform") or [""])[0]
             except Exception:
                 pass
+            _plat_now = _guess_platform(os.path.basename(OTA_FILE)) if OTA_FILE else OTA_PLATFORM
+            if plat and OTA_FILE and plat != _plat_now:
+                # прошивка в firmware/ для другой модели — не подсовываем
+                print(f"  >>> [OTA] платформа колонки {plat} != прошивки {_plat_now} — проксирую в Яндекс <<<")
+                self.proxy_upstream(fallback="ok")
+                return
             already = bool(cur) and (cur.startswith(OTA_VERSION) or OTA_VERSION.startswith(cur))
             if OTA_FILE and not no_downgrade() and not already:
                 # авто: в firmware/ лежит другая версия -> предлагаем её (единственный локальный ответ)
