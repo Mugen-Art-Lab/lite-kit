@@ -138,23 +138,65 @@ MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip
 SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
 
 
-SYNC_TEMPLATE = os.path.join(BASE_DIR, "log", "sync_real.json")
+SYNC_DUMP = os.path.join(BASE_DIR, "log", "sync_real.json")
+SYNC_TEMPLATE = os.path.join(BASE_DIR, "log", "sync_template.json")
 ADBD = {"remoteActivation": True, "network": True, "fullDurationMs": 31536000000}
+
+_TEMPLATE = {"loaded": False, "data": None}
+
+
+def _sanitize(d):
+    """Убираем из шаблона секреты и привязку к конкретному устройству."""
+    if not isinstance(d, dict):
+        return d
+    d.pop("glagol", None)                       # там локальные серт+ключ
+    cfg = d.get("config")
+    if isinstance(cfg, dict):
+        acc = cfg.get("account_config")
+        if isinstance(acc, dict):
+            acc.pop("user_wifi_config", None)   # хеш Wi-Fi пользователя
+        dev = cfg.get("device_config")
+        if isinstance(dev, dict):
+            dev.pop("location", None)           # координаты пользователя
+    return d
+
+
+def _load_template():
+    """Берём шаблон: сгенерированный -> дамп -> ничего."""
+    for path in (SYNC_TEMPLATE, SYNC_DUMP):
+        if not os.path.exists(path):
+            continue
+        try:
+            d = _sanitize(json.load(open(path, encoding="utf-8")))
+        except Exception:
+            continue
+        if path == SYNC_DUMP:
+            try:                                # кэшируем очищенный шаблон
+                json.dump(d, open(SYNC_TEMPLATE, "w", encoding="utf-8"), ensure_ascii=False)
+            except OSError:
+                pass
+        return d
+    return None
 
 
 def sync_payload():
-    """Ответ /get_sync_info: если есть настоящий дамп — используем его как шаблон и вписываем adbd."""
-    if os.path.exists(SYNC_TEMPLATE):
-        try:
-            d = json.load(open(SYNC_TEMPLATE, encoding="utf-8"))
-            cfg = d.setdefault("config", {})
-            cfg.setdefault("system_config", {})["adbd"] = dict(ADBD)
-            cfg["adbd"] = dict(ADBD)
-            d.setdefault("adbd", dict(ADBD))
-            return json.dumps(d, ensure_ascii=False).encode()
-        except Exception as e:
-            print(f"  >>> [SYNC] шаблон не прочитался ({e!r}), отдаю минимальный")
-    return SYNC_INFO_PAYLOAD
+    """Ответ /get_sync_info со включённым ADB — одинаково для всех моделей."""
+    if not _TEMPLATE["loaded"]:
+        _TEMPLATE["data"] = _load_template()
+        _TEMPLATE["loaded"] = True
+    base = _TEMPLATE["data"]
+    if base is None:
+        d = json.loads(SYNC_INFO_PAYLOAD.decode())
+    else:
+        d = json.loads(json.dumps(base))        # копия
+
+    cfg = d.setdefault("config", {})
+    for section in ("system_config", "device_config"):
+        cfg.setdefault(section, {})["adbd"] = dict(ADBD)
+    cfg["adbd"] = dict(ADBD)
+    d["adbd"] = dict(ADBD)
+    d.setdefault("status", "ok")
+    return json.dumps(d, ensure_ascii=False).encode()
 
 
 class EquasarHandler(http.server.BaseHTTPRequestHandler):
@@ -244,6 +286,15 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(_r)
             print("  >>> [REGISTER] локальный ответ allvalid <<<")
+            return
+
+        if is_column and clean_path in ("/set_device_capability", "/update_device_state"):
+            _ok = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_ok)))
+            self.end_headers()
+            self.wfile.write(_ok)
             return
 
         if clean_path in ["/get_sync_info", "/quasar/get_sync_info"] and is_column:
