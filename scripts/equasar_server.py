@@ -949,6 +949,14 @@ def main():
     if args.passthrough or os.environ.get("EQUASAR_MODE") == "passthrough":
         MODE_PASSTHROUGH = True
 
+    # создаём файлы логов сразу, чтобы они были даже без активности
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        for _n in ("yandex.log", "local.log", "dns.log"):
+            open(os.path.join(LOG_DIR, _n), "a", encoding="utf-8").close()
+    except OSError as e:
+        print(f"[!] не смог создать логи в {LOG_DIR}: {e}")
+
     cert_path, key_path = find_certificates()
     if not cert_path or not key_path:
         print("[!] Ошибка: Сертификаты fullchain.pem и quasar-all.key не найдены.")
