@@ -68,10 +68,10 @@ echo "=== СТЕНД ПОДНЯТ ==="
 echo "  адрес машины   : $IP"
 echo "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $IP"
 echo "  сервер         : 80 и 443 (серты eMudhra)"
-echo "  режим          : $(if [ -f "$BASE/run/no_downgrade" ]; then echo "обновления выключены (run/no_downgrade)"; elif ls "$BASE"/firmware/*.zip >/dev/null 2>&1; then echo "ADB + авто-прошивка (если версия не совпадает)"; else echo "ADB, обновления выключены (нет прошивки)"; fi)"
-FW="$(ls "$BASE"/firmware/*.zip 2>/dev/null | head -1)"
+echo "  режим          : $(if [ -f "$BASE/run/no_downgrade" ]; then echo "обновления выключены (run/no_downgrade)"; elif find "$BASE/firmware" -name '*.zip' -print -quit | grep -q .; then echo "ADB + авто-прошивка (если версия не совпадает)"; else echo "ADB, обновления выключены (нет прошивки)"; fi)"
+FW="$(find "$BASE/firmware" -name '*.zip' 2>/dev/null | head -1)"
 if [ -n "$FW" ]; then
-    echo "  прошивка       : $(basename "$FW") ($(wc -c <"$FW" | tr -d ' ') б)"
+    echo "  прошивка       : $(basename "$(dirname "$FW")")/$(basename "$FW") ($(wc -c <"$FW" | tr -d ' ') б)"
 else
     echo "  прошивка       : в firmware/ нет .zip (раздача прошивки недоступна)"
 fi

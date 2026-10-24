@@ -100,11 +100,16 @@ Write-Host "=== СТЕНД ПОДНЯТ ==="
 Write-Host "  адрес машины   : $ip"
 Write-Host "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $ip"
 Write-Host "  сервер         : 53 (UDP/TCP), 80 и 443"
-$hasFw = (Get-ChildItem "$Base\firmware\*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1)
+$hasFw = (Get-ChildItem "$Base\firmware" -Recurse -Filter *.zip -ErrorAction SilentlyContinue | Select-Object -First 1)
 $modeText = if (Test-Path "$Base\run\no_downgrade") { 'обновления выключены (run\no_downgrade)' } elseif ($hasFw) { 'ADB + авто-прошивка (если версия не совпадает)' } else { 'ADB, обновления выключены (нет прошивки)' }
 Write-Host "  режим          : $modeText"
-$fw = Get-ChildItem "$Base\firmware\*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($fw) { Write-Host "  прошивка       : $($fw.Name) ($($fw.Length) б)" } else { Write-Host "  прошивка       : в firmware\ нет .zip (раздача прошивки недоступна)" }
+$fws = @(Get-ChildItem "$Base\firmware" -Recurse -Filter *.zip -ErrorAction SilentlyContinue)
+if ($fws.Count -gt 0) {
+    foreach ($f in $fws) {
+        $plat = $f.Directory.Name
+        Write-Host "  прошивка       : $plat / $($f.Name) ($($f.Length) б)"
+    }
+} else { Write-Host "  прошивка       : в firmware\ нет .zip (раздача прошивки недоступна)" }
 Write-Host "  лог            : $Base\log\server.log"
 Write-Host ""
 Write-Host "Проверка DNS на этой машине (должно быть $ip):"
