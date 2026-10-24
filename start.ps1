@@ -26,7 +26,16 @@ if (-not $ip) { Write-Host "[!] не смог определить IP этой �
 # --- python ---
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+if (-not $py) {
+    # python есть, но не в PATH — ищем типовые места установки
+    $cand = @()
+    $cand += Get-ChildItem "C:\Python*\python.exe" -ErrorAction SilentlyContinue
+    $cand += Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python*\python.exe" -ErrorAction SilentlyContinue
+    $cand += Get-ChildItem "$env:ProgramFiles\Python*\python.exe" -ErrorAction SilentlyContinue
+    if ($cand.Count -gt 0) { $py = ($cand | Sort-Object FullName -Descending | Select-Object -First 1).FullName }
+}
 if (-not $py) { Write-Host "[!] python не найден: установи с python.org (галочка Add to PATH)"; exit 1 }
+Write-Host "[*] python: $py"
 
 New-Item -ItemType Directory -Force -Path "$Base\run", "$Base\log" | Out-Null
 

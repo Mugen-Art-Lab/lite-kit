@@ -143,12 +143,32 @@ if ($size -lt 1000000) {
 if ($size -lt 1000000) { Write-Host "[!] не удалось получить прошивку (размер $size б)"; exit 1 }
 
 $sha = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLower()
-$py = (Get-Command python -ErrorAction SilentlyContinue).Source
-$crc = 0
-if ($py) {
-    $crc = & $py -c "import sys,zlib;print(zlib.crc32(open(sys.argv[1],'rb').read()) & 0xFFFFFFFF)" $zipPath
-    $crc = ($crc | Select-Object -First 1).ToString().Trim()
+# crc32 без Python (на Windows его может не быть) — считаем через C#
+if (-not ("Crc32" -as [type])) {
+    Add-Type -TypeDefinition @"
+public static class Crc32 {
+    static readonly uint[] T = new uint[256];
+    static Crc32() {
+        for (uint i = 0; i < 256; i++) {
+            uint c = i;
+            for (int k = 0; k < 8; k++) c = ((c & 1) != 0) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            T[i] = c;
+        }
+    }
+    public static uint Compute(string path) {
+        uint crc = 0xFFFFFFFFu;
+        using (var fs = System.IO.File.OpenRead(path)) {
+            var buf = new byte[1 << 20];
+            int n;
+            while ((n = fs.Read(buf, 0, buf.Length)) > 0)
+                for (int i = 0; i < n; i++) crc = T[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+        }
+        return crc ^ 0xFFFFFFFFu;
+    }
 }
+"@
+}
+$crc = [Crc32]::Compute($zipPath)
 Write-Host "[*] размер:    $size б, crc32 $crc"
 
 if ($meta) {
