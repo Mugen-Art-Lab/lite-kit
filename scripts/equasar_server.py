@@ -47,6 +47,9 @@ SYNC_INFO_PAYLOAD = b'{"status":"ok","config":{"account_config":{"spotter":"alis
 
 NO_UPDATE_PAYLOAD = b'{"hasUpdate":false}'
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _local_ip():
     """IP этой машины в локалке — чтобы колонка могла скачать прошивку с нас."""
     try:
@@ -59,35 +62,104 @@ def _local_ip():
         return "127.0.0.1"
 
 
+def _find_ota():
+    """Ищем образ прошивки и метаданные в firmware/ (модель может быть любой)."""
+    import glob
+    d = os.path.join(BASE_DIR, "firmware")
+    zips = sorted(glob.glob(os.path.join(d, "*.zip")))
+    meta = {}
+    try:
+        meta = json.load(open(os.path.join(d, "manifest.json"), encoding="utf-8"))
+    except Exception:
+        pass
+    if not zips:
+        return None, meta
+    # если в манифесте указан filename — берём его, иначе самый свежий по имени
+    want = meta.get("filename")
+    path = os.path.join(d, want) if want and os.path.exists(os.path.join(d, want)) else zips[-1]
+    return path, meta
+
+
+OTA_FILE, OTA_META = _find_ota()
+_OTA_NAME = os.path.basename(OTA_FILE) if OTA_FILE else ""
+
+
+def _guess_platform(name):
+    """0.xxx — Lite/Micro, 1.xxx — Mini/Midi (по ветке версии в имени файла)."""
+    b = os.path.basename(name or "")
+    return "yandexstation" if b.startswith("1.") else "yandexmicro"
+
+
+# версия и модель берутся ИЗ ИМЕНИ ФАЙЛА — манифест в firmware/ может быть устаревшим
+OTA_VERSION = _OTA_NAME[:-4] if _OTA_NAME.endswith(".zip") else _OTA_NAME
+OTA_PLATFORM = _guess_platform(_OTA_NAME)
+OTA_PREFIX = "/%s/ota/" % OTA_PLATFORM
+_OTA_CRC = {"v": None}
+
+
+def _ota_crc():
+    """CRC32 реального файла (с кэшем). Манифесту не доверяем — он часто не совпадает."""
+    if _OTA_CRC["v"] is not None:
+        return _OTA_CRC["v"]
+    if not OTA_FILE or not os.path.exists(OTA_FILE):
+        return 0
+    import zlib
+    crc = 0
+    with open(OTA_FILE, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            crc = zlib.crc32(chunk, crc)
+    _OTA_CRC["v"] = crc & 0xFFFFFFFF
+    return _OTA_CRC["v"]
+
+
 def _downgrade_payload():
+    name = os.path.basename(OTA_FILE) if OTA_FILE else ""
     return json.dumps({
         "hasUpdate": True,
         "version": OTA_VERSION,
-        "downloadUrl": "https://quasar.yandex.net" + OTA_PREFIX + os.path.basename(OTA_FILE),
-        "crc32": 371630625,
+        "downloadUrl": "https://quasar.yandex.net" + OTA_PREFIX + name,
+        "crc32": _ota_crc(),
         "critical": True,
-        "fallbackUrl": "https://quasar.yandex.net" + OTA_PREFIX + os.path.basename(OTA_FILE),
+        "fallbackUrl": "https://quasar.yandex.net" + OTA_PREFIX + name,
         "fallbackIp": LOCAL_IP,
         "updateId": "150484",
     }).encode()
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OTA_FILE = os.path.join(BASE_DIR, "firmware", "0.369.1.46.4778262442.20261013.297.zip")
-OTA_PREFIX = "/yandexmicro/ota/"
-OTA_VERSION = "0.369.1.46.4778262442.20261013.297"
-
 # --- опциональные настройки через окружение (все необязательные) ---
-# IP мака: по умолчанию определяется автоматически
 LOCAL_IP = os.environ.get("LOCAL_IP") or _local_ip()
-# дополнительные IP колонки: по умолчанию ПУСТО — матчим по User-Agent и по device-id в пути
 COLUMN_IPS = {ip.strip() for ip in os.environ.get("COLUMN_IPS", "").split(",") if ip.strip()}
-# device-id колонки: можно переопределить, если у вас другая станция
 COLUMN_ID = os.environ.get("COLUMN_ID", "LP00000000000001982300007d20fe15")
 
 MODE_DOWNGRADE = False
+BUILD = "2026-10-24 03:12"
+MODE_PASSTHROUGH = False   # всё прозрачно в настоящий Яндекс (диагностика)
+MODE_OTA_ONLY = False      # только прошивка: /check_updates + zip, остальное — в Яндекс (Mini)
+SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: проксировать /get_sync_info и дампить ответ
+
+
+SYNC_TEMPLATE = os.path.join(BASE_DIR, "log", "sync_real.json")
+ADBD = {"remoteActivation": True, "network": True, "fullDurationMs": 31536000000}
+
+
+def sync_payload():
+    """Ответ /get_sync_info: если есть настоящий дамп — используем его как шаблон и вписываем adbd."""
+    if os.path.exists(SYNC_TEMPLATE):
+        try:
+            d = json.load(open(SYNC_TEMPLATE, encoding="utf-8"))
+            cfg = d.setdefault("config", {})
+            cfg.setdefault("system_config", {})["adbd"] = dict(ADBD)
+            cfg["adbd"] = dict(ADBD)
+            d.setdefault("adbd", dict(ADBD))
+            return json.dumps(d, ensure_ascii=False).encode()
+        except Exception as e:
+            print(f"  >>> [SYNC] шаблон не прочитался ({e!r}), отдаю минимальный")
+    return SYNC_INFO_PAYLOAD
+
 
 class EquasarHandler(http.server.BaseHTTPRequestHandler):
+    # старые прошивки (Mini 2019) ждут HTTP/1.1, на HTTP/1.0 считают проверку связи неудачной
+    protocol_version = "HTTP/1.1"
     def log_message(self, format, *args):
         client = self.client_address[0]
         ua = self.headers.get("User-Agent", "-")
@@ -104,6 +176,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         # колонка проверяет связность через HEAD /generate_204
         if self.path.split("?")[0] == "/generate_204":
             self.send_response(204)
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         self.send_response(200)
@@ -111,13 +184,48 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_request(self):
         clean_path = self.path.split("?")[0]
+        if SYNC_PROXY and clean_path.startswith("/get_sync_info"):
+            # диагностика: забираем настоящий ответ Яндекса и сохраняем для разбора
+            self.proxy_upstream(dump_path=os.path.join(BASE_DIR, "log", "sync_real.json"))
+            return
+        if MODE_PASSTHROUGH:
+            # режим «сквозь»: ничего не подменяем, просто проксируем в настоящий Яндекс
+            self.proxy_upstream()
+            return
+        if MODE_OTA_ONLY:
+            # только доставка прошивки: манифест и сам zip отдаём мы, всё прочее — в Яндекс
+            if clean_path.endswith(".zip") or clean_path.startswith(OTA_PREFIX):
+                self.serve_ota()
+                return
+            if clean_path.startswith("/check_updates") or clean_path.startswith("/allow_update"):
+                # отдаём манифест всем, кто спросил про обновление (это безопасно: только прошивка)
+                payload = _downgrade_payload()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                print("  >>> [OTA-ONLY] выдан манифест прошивки <<<")
+                return
+            self.proxy_upstream()
+            return
         # подменяем ответы ТОЛЬКО самой колонке; телефон/приложение идут в настоящий Яндекс
         ua = self.headers.get("User-Agent", "")
-        is_column = (COLUMN_ID in self.path) or ("YandexStation" in ua) or (self.client_address[0] in COLUMN_IPS)
+        ua_l = ua.lower()
+        path_l = self.path.lower()
+        is_column = (
+            (COLUMN_ID in self.path)
+            or (self.client_address[0] in COLUMN_IPS)
+            or any(k in ua_l for k in ("yandexstation", "yandexmicro", "yandexmini", "yandexmidi"))
+            # станция иногда приходит без User-Agent — узнаём по характерным параметрам
+            or ("platform=yandex" in path_l)
+            or (path_l.startswith("/get_sync_info") and "device_id=" in path_l)
+            or (path_l.startswith("/check_updates") and "device_id=" in path_l)
+        )
 
 
         # --- раздача OTA со своего диска (кусками, с Range) ---
-        if clean_path.startswith(OTA_PREFIX):
+        if clean_path.endswith(".zip") or clean_path.startswith(OTA_PREFIX):
             self.serve_ota()
             return
 
@@ -127,12 +235,24 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
             
+        if clean_path.rstrip("/").endswith("/register") and is_column and os.environ.get("PROXY_REGISTER") != "1":
+            # Mini 1.369 зацикливается на регистрации, если ответ не такой — проверено на живой колонке
+            _r = b'{"message":"allvalid","status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(_r)))
+            self.end_headers()
+            self.wfile.write(_r)
+            print("  >>> [REGISTER] локальный ответ allvalid <<<")
+            return
+
         if clean_path in ["/get_sync_info", "/quasar/get_sync_info"] and is_column:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(SYNC_INFO_PAYLOAD)))
+            _p = sync_payload()
+            self.send_header("Content-Length", str(len(_p)))
             self.end_headers()
-            self.wfile.write(SYNC_INFO_PAYLOAD)
+            self.wfile.write(_p)
             print("  >>> [SUCCESS] Колонке отправлена команда активации ADB! <<<")
             return
             
@@ -168,7 +288,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
     def serve_ota(self):
         """Отдача локального OTA-файла с поддержкой Range (колонка качает кусками)."""
         import os
-        if not os.path.exists(OTA_FILE):
+        if not OTA_FILE or not os.path.exists(OTA_FILE):
             self.send_response(404)
             self.end_headers()
             return
@@ -213,7 +333,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         print(f"  >>> [OTA] отдано {length}б (bytes {start}-{end}/{size}) <<<")
         sys.stdout.flush()
 
-    def proxy_upstream(self):
+    def proxy_upstream(self, dump_path=None):
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
         ip = real_ip(host)
         try:
@@ -228,6 +348,13 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             conn.request(self.command, self.path, body=body, headers=hdrs)
             r = conn.getresponse()
             data = r.read()
+            if dump_path:
+                try:
+                    with open(dump_path, "wb") as f:
+                        f.write(data)
+                    print(f"  >>> [DUMP] настоящий ответ сохранён: {dump_path} ({len(data)}b)")
+                except OSError as e:
+                    print(f"  >>> [DUMP] не смог сохранить: {e}")
             self.send_response(r.status)
             for k, v in r.getheaders():
                 if k.lower() in ("content-type", "content-length", "cache-control", "etag", "last-modified"):
@@ -262,6 +389,12 @@ def run_https(cert_file, key_file, port=443):
     try:
         httpd = ReusableServer(("0.0.0.0", port), EquasarHandler)
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        # старые прошивки (Mini 2019) умеют только TLS 1.2 и ниже — не отсекаем их
+        try:
+            ctx.minimum_version = ssl.TLSVersion.TLSv1
+            ctx.set_ciphers("DEFAULT@SECLEVEL=0")
+        except (AttributeError, ValueError, ssl.SSLError):
+            pass
         ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
         print(f"[*] HTTPS сервер слушает порт {port} (с сертификатами)...")
@@ -283,21 +416,41 @@ def find_certificates():
     return None, None
 
 def main():
-    global MODE_DOWNGRADE
+    global MODE_DOWNGRADE, MODE_PASSTHROUGH, MODE_OTA_ONLY
     parser = argparse.ArgumentParser(description="eQuasar Server for Yandex Station Lite 1")
     parser.add_argument("--downgrade", action="store_true", help="Включить режим даунгрейда на уязвимую прошивку")
+    parser.add_argument("--ota-only", action="store_true",
+                        help="Только прошивка (Mini): отдавать манифест и zip, всё остальное — в Яндекс")
+    parser.add_argument("--passthrough", action="store_true",
+                        help="Прозрачный режим: всё проксируется в настоящий Яндекс (для диагностики TLS)")
     args = parser.parse_args()
 
     if args.downgrade or os.environ.get("EQUASAR_MODE") == "downgrade":
         MODE_DOWNGRADE = True
+    if args.ota_only or os.environ.get("EQUASAR_MODE") == "ota":
+        MODE_OTA_ONLY = True
+    if args.passthrough or os.environ.get("EQUASAR_MODE") == "passthrough":
+        MODE_PASSTHROUGH = True
 
     cert_path, key_path = find_certificates()
     if not cert_path or not key_path:
         print("[!] Ошибка: Сертификаты fullchain.pem и quasar-all.key не найдены.")
         sys.exit(1)
 
+    if OTA_FILE:
+        print(f"[OTA] {os.path.basename(OTA_FILE)} | версия {OTA_VERSION} | crc32 {_ota_crc()} | "
+              f"модель {OTA_PLATFORM} | отдаём по {OTA_PREFIX}")
+    else:
+        print("[OTA] в firmware/ нет .zip — режим отката будет отдавать 404")
     print("==================================================================")
     print("      eQuasar Server — Кроссплатформенный сервер eQuasar          ")
+    print(f"      build {BUILD}")
+    if MODE_PASSTHROUGH:
+        print("[РЕЖИМ] PASSTHROUGH — всё уходит в настоящий Яндекс, подмены выключены")
+    if MODE_OTA_ONLY:
+        print("[РЕЖИМ] OTA-ONLY — только прошивка: манифест и zip, всё остальное в Яндекс (ADB не включаем)")
+    if SYNC_PROXY:
+        print("[РЕЖИМ] SYNC_PROXY — /get_sync_info проксируется, настоящий ответ пишется в log/sync_real.json")
     print("==================================================================")
     if MODE_DOWNGRADE:
         print("РЕЖИМ: [ДАУНГРЕЙД] — Отдача официальной уязвимой прошивки Яндекса")

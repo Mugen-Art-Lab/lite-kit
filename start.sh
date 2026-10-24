@@ -4,7 +4,7 @@
 set -uo pipefail
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
-[ "$(id -u)" = 0 ] || exec sudo bash "$0" "$@"
+[ "$(id -u)" = 0 ] || exec sudo --preserve-env=SYNC_PROXY,COLUMN_IPS,LOCAL_IP,EQUASAR_MODE bash "$0" "$@"
 
 IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
 [ -z "$IP" ] && IP="$(ipconfig getifaddr en1 2>/dev/null || true)"
@@ -27,16 +27,36 @@ sed -e "s|__MACIP__|$IP|g" -e "s|__LOGDIR__|$BASE/log|g" -e "s|__RUNDIR__|$BASE/
 "$DNSMASQ" --conf-file="$BASE/run/dnsmasq.conf"
 sleep 1
 
+# --- какой питон брать: нужен OpenSSL >= 1.1.1 (TLS 1.3) ---
+PYBIN=""
+for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    [ -x "$c" ] || continue
+    if "$c" -c 'import ssl,sys; sys.exit(0 if ssl.OPENSSL_VERSION_INFO >= (1,1,1) else 1)' 2>/dev/null; then
+        PYBIN="$c"; break
+    fi
+done
+[ -z "$PYBIN" ] && PYBIN=/usr/bin/python3
+echo "[*] python: $PYBIN ($("$PYBIN" -c 'import ssl; print(ssl.OPENSSL_VERSION)' 2>/dev/null))"
+export LOCAL_IP="${LOCAL_IP:-$IP}"
+# флаг-файл: touch run/sync_proxy — включить диагностику /get_sync_info без возни с env
+[ -f "$BASE/run/sync_proxy" ] && export SYNC_PROXY=1     # манифест должен указывать на этот мак, а не на VPN-интерфейс
+
 # --- сервер :80/:443 ---
-( cd "$BASE" && /usr/bin/python3 scripts/equasar_server.py --downgrade >> "$BASE/log/server.log" 2>&1 & echo $! > "$BASE/run/server.pid" )
+( cd "$BASE" && MODE=""; [ -f "$BASE/run/ota_only" ] && MODE="--ota-only"; "$PYBIN" scripts/equasar_server.py --downgrade $MODE >> "$BASE/log/server.log" 2>&1 & echo $! > "$BASE/run/server.pid" )
 sleep 2
 
 echo
 echo "=== СТЕНД ПОДНЯТ ==="
 echo "  мак            : $IP"
 echo "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $IP"
-echo "  сервер         : 80 и 443 (серты eMudhra)"
-echo "  прошивка       : 0.369.1.46.4778262442.20261013.297 (локально, 66 814 464 б)"
+echo "  сервер         : 80 и 443 (серты eMudhra)
+  режим          : $( [ -f "$BASE/run/ota_only" ] && echo "только прошивка (OTA-only)" || echo "ADB + прошивка" )"
+FW="$(ls "$BASE"/firmware/*.zip 2>/dev/null | head -1)"
+if [ -n "$FW" ]; then
+    echo "  прошивка       : $(basename "$FW") ($(wc -c <"$FW" | tr -d ' ') б)"
+else
+    echo "  прошивка       : в firmware/ нет .zip (режим отката будет отдавать 404)"
+fi
 echo "  лог            : $BASE/log/server.log"
 echo
 echo "Проверка DNS (должно быть $IP):"

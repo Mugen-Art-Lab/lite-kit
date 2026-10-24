@@ -15,9 +15,8 @@ address=/quasar.yandex.ru/__MACIP__
 address=/scbh.yandex.net/__MACIP__
 
 # AAAA -> NODATA, иначе колонка уйдёт на настоящий IPv6 мимо нас
-address=/quasar.yandex.net/::
-address=/quasar.yandex.ru/::
-address=/scbh.yandex.net/::
+# AAAA не отдаём вообще: иначе станция получает "::" и пытается в IPv6
+filter-AAAA
 
 # поддомены не перехватываем
 server=/iot.quasar.yandex.ru/1.1.1.1
