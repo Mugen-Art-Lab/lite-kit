@@ -425,16 +425,30 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         self._read_body()
 
     def _read_body(self):
-        """Читает тело запроса один раз (повторные вызовы отдают то же самое)."""
+        """Читает тело запроса один раз. Поддерживает Content-Length и chunked."""
         if getattr(self, "_body", None) is None:
+            body = b""
             try:
-                n = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                n = 0
-            try:
-                self._body = self.rfile.read(n) if n > 0 else b""
-            except OSError:
-                self._body = b""
+                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                    while True:
+                        line = self.rfile.readline(65536).strip()
+                        if not line:
+                            break
+                        try:
+                            size = int(line.split(b";")[0], 16)
+                        except ValueError:
+                            break
+                        if size == 0:
+                            self.rfile.readline(65536)      # трейлер
+                            break
+                        body += self.rfile.read(size)
+                        self.rfile.read(2)                  # CRLF после чанка
+                else:
+                    n = int(self.headers.get("Content-Length") or 0)
+                    body = self.rfile.read(n) if n > 0 else b""
+            except (ValueError, OSError):
+                body = b""
+            self._body = body
         return self._body
 
     def _send_json(self, payload, code=200):
@@ -654,7 +668,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(payload)
                 return
             # во всех остальных случаях спрашиваем настоящий Яндекс и отдаём его ответ как есть
-            _fb = "sync" if is_sync_path(self.path) else ("register" if "register" in path_l else "ok")
+            _fb = "ok" if ("update_device_state" in clean_path or "set_device_capability" in clean_path) \
+                  else ("sync" if is_sync_path(self.path) else "ok")
             self.proxy_upstream(fallback=_fb)
             return
             
@@ -665,7 +680,10 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         # Всё остальное (/register, /get_config, ...) — пробрасываем в настоящий Яндекс,
         # иначе колонка получает "OK" вместо реального ответа и ругается "что-то не так".
         # Но 429/5xx от Яндекса колонке не отдаём: она принимает это за провал синка.
-        _fb = "sync" if is_sync_path(self.path) else ("register" if "register" in path_l else "ok")
+        if "/update_device_state" in clean_path or "/set_device_capability" in clean_path:
+            _fb = "ok"
+        else:
+            _fb = "sync" if is_sync_path(self.path) else ("register" if "register" in path_l else "ok")
         self.proxy_upstream(fallback=_fb)
 
     def register_passthrough(self):
