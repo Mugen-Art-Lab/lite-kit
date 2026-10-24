@@ -1,4 +1,4 @@
-# check.ps1 — ищет колонку в сети и проверяет ADB (Windows).
+﻿# check.ps1 — ищет колонку в сети и проверяет ADB (Windows).
 $ErrorActionPreference = "Continue"
 $Base = Split-Path -Parent $PSCommandPath
 

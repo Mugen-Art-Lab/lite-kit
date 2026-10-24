@@ -1,4 +1,4 @@
-# start.ps1 — поднимает стенд eQuasar на Windows (DNS + HTTPS на 53/80/443).
+﻿# start.ps1 — поднимает стенд eQuasar на Windows (DNS + HTTPS на 53/80/443).
 # Запуск: правый клик -> "Выполнить с помощью PowerShell" или  powershell -ExecutionPolicy Bypass -File .\start.ps1
 # Сам запросит права администратора.
 

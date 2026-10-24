@@ -1,4 +1,4 @@
-# stop.ps1 — останавливает стенд на Windows.
+﻿# stop.ps1 — останавливает стенд на Windows.
 param([switch]$Quiet)
 $Base = Split-Path -Parent $PSCommandPath
 
