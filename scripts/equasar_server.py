@@ -427,7 +427,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_ota()
             else:
                 # обновления выключены: без манифеста сюда никто не должен ходить
-                print("  >>> [OTA] раздача прошивки отключена (нет run/downgrade или run/ota_only)")
+                print("  >>> [OTA] раздача прошивки отключена (нет run/downgrade)")
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
                 self.end_headers()

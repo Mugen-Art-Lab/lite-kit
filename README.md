@@ -215,23 +215,19 @@ LOCAL_IP=192.168.1.10 ./start.sh
 
 ```bash
 touch run/downgrade      # откат/обновление на файл из firmware/
-# или
-touch run/ota_only       # Mini: только прошивка, без ADB
 ./stop.sh && sudo ./start.sh
 ```
 
 ---
 
-## Mini: только прошивка (без ADB)
+## Проверено
 
-Для Station Mini 1 (`1.369.x`) есть отдельный режим — стенд отдаёт только манифест
-и файл прошивки, остальное проксирует в Яндекс. ADB в нём не включается.
-
-```bash
-touch run/ota_only && ./stop.sh && sudo ./start.sh
-```
-
-Подробно: [docs/mini-downgrade.md](docs/mini-downgrade.md)
+- **Лайт 1** (`yandexmicro`) — ADB включается, проверено.
+- **Мини** (`yandexmini`, прошивка `1.305.4.16.3237824040.20250721`) — ADB включается,
+  проверено на живой колонке: `/get_sync_info` отдаётся с `adbd.remoteActivation=true`,
+  `adb connect <ip>:5555` работает. Отдельный «только прошивка» способ для Мини
+  больше не нужен.
+- Midi/Station 2 — код общий (`sync_template.json` + `adbd`), на живой колонке не проверялось.
 
 ---
 
