@@ -225,6 +225,11 @@ OK_PAYLOAD = b'{"status":"ok"}'
 UPSTREAM_SOFT_ERRORS = (429,)
 
 
+def no_downgrade():
+    """Аварийный выключатель авто-раздачи прошивки: touch run/no_downgrade."""
+    return os.path.exists(os.path.join(BASE_DIR, "run", "no_downgrade"))
+
+
 def is_sync_path(path):
     """Sync-подобный запрос: /get_sync_info, /sync, ... — отвечаем локально."""
     return "sync" in (path or "").lower()
@@ -430,11 +435,11 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
         # --- раздача OTA со своего диска (кусками, с Range) ---
         if clean_path.endswith(".zip") or clean_path.startswith(OTA_PREFIX):
-            if MODE_DOWNGRADE or MODE_OTA_ONLY:
+            if MODE_OTA_ONLY or (OTA_FILE and not no_downgrade()):
                 self.serve_ota()
             else:
-                # обновления выключены: без манифеста сюда никто не должен ходить
-                print("  >>> [OTA] раздача прошивки отключена (нет run/downgrade)")
+                # прошивки нет или стоит run/no_downgrade: отдавать нечего
+                print("  >>> [OTA] раздача прошивки отключена (нет файла или run/no_downgrade)")
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -492,14 +497,18 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 cur = (q.get("version") or [""])[0]
             except Exception:
                 pass
-            already = cur.startswith(OTA_VERSION)
-            payload = _downgrade_payload() if (MODE_DOWNGRADE and not already) else NO_UPDATE_PAYLOAD
-            if already:
-                print("  >>> [OTA] колонка уже на целевой версии — hasUpdate:false <<<")
-            elif MODE_DOWNGRADE:
-                print("  >>> [DOWNGRADE] Колонке отправлен манифест уязвимой прошивки! <<<")
+            already = bool(cur) and (cur.startswith(OTA_VERSION) or OTA_VERSION.startswith(cur))
+            if no_downgrade() or not OTA_FILE:
+                payload = NO_UPDATE_PAYLOAD
+                print("  >>> [OTA] обновления выключены (нет файла или run/no_downgrade) <<<")
+            elif already:
+                payload = NO_UPDATE_PAYLOAD
+                print(f"  >>> [OTA] колонка на нашей версии ({cur}) — hasUpdate:false <<<")
             else:
-                print("  >>> [SECURITY] Запрос обновлений заблокирован (hasUpdate: false) <<<")
+                # авто: прошивка в firmware/ не совпадает с версией колонки -> предлагаем её
+                payload = _downgrade_payload()
+                print(f"  >>> [OTA-AUTO] у колонки {cur or '?'}, у нас {OTA_VERSION} — "
+                      f"отдаю манифест прошивки <<<")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))

@@ -68,7 +68,7 @@ echo "=== СТЕНД ПОДНЯТ ==="
 echo "  адрес машины   : $IP"
 echo "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $IP"
 echo "  сервер         : 80 и 443 (серты eMudhra)"
-echo "  режим          : $(if [ -f "$BASE/run/downgrade" ]; then echo "откат на прошивку (downgrade)"; else echo "ADB, обновления заблокированы"; fi)"
+echo "  режим          : $(if [ -f "$BASE/run/no_downgrade" ]; then echo "обновления выключены (run/no_downgrade)"; elif ls "$BASE"/firmware/*.zip >/dev/null 2>&1; then echo "ADB + авто-прошивка (если версия не совпадает)"; else echo "ADB, обновления выключены (нет прошивки)"; fi)"
 FW="$(ls "$BASE"/firmware/*.zip 2>/dev/null | head -1)"
 if [ -n "$FW" ]; then
     echo "  прошивка       : $(basename "$FW") ($(wc -c <"$FW" | tr -d ' ') б)"

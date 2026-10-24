@@ -171,6 +171,44 @@ case("POST /set_device_capability", "429", "POST", "/set_device_capability",
      want_body=b'{"status":"ok"}')
 case("POST /update_device_state", "429", "POST", "/update_device_state",
      want_body=b'{"status":"ok"}')
+
+# --- авто-раздача прошивки: включена, если версия колонки не совпадает ---
+_saved_ota, _saved_ver = es.OTA_FILE, es.OTA_VERSION
+_fw = os.path.join(es.CACHE_DIR, "1.2.3.4.zip")
+os.makedirs(es.CACHE_DIR, exist_ok=True)
+with open(_fw, "wb") as f:
+    f.write(b"PK\x03\x04" + b"\0" * 2048)
+es.OTA_FILE = _fw
+es.OTA_VERSION = "1.2.3.4"
+
+
+def _fw_case(name, version, want_update, block=False):
+    orig = es.no_downgrade
+    if block:
+        es.no_downgrade = lambda: True
+    try:
+        code, data = call("GET", f"/check_updates?device_id=LP00&version={version}&platform=yandexmicro")
+    finally:
+        es.no_downgrade = orig
+    got = b'"hasUpdate": true' in data or b'"hasUpdate":true' in data
+    ok = code == 200 and got == want_update
+    if not ok:
+        FAILS.append(name)
+    print(f"{'ok  ' if ok else 'FAIL'} {name:52} -> {code} hasUpdate={got}")
+
+
+_fw_case("авто-прошивка: версия другая -> манифест", "1.0.0", True)
+_fw_case("авто-прошивка: версия совпала -> hasUpdate:false", "1.2.3.4", False)
+_fw_case("авто-прошивка: run/no_downgrade -> выкл", "1.0.0", False, block=True)
+
+es.OTA_FILE = None
+code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
+ok = code == 200 and b'"hasUpdate": false' in data or b'"hasUpdate":false' in data
+if not ok:
+    FAILS.append("авто-прошивка: нет файла -> выкл")
+print(f"{'ok  ' if ok else 'FAIL'} {'авто-прошивка: нет файла -> hasUpdate:false':52} -> {code}")
+
+es.OTA_FILE, es.OTA_VERSION = _saved_ota, _saved_ver
 case("check_updates без downgrade -> hasUpdate:false", "429", "GET",
      "/check_updates?device_id=LP00&version=1.305.4.16&platform=yandexmini",
      want_body=b'{"hasUpdate":false}')
@@ -310,13 +348,23 @@ es.OTA_FILE = _zip
 es.OTA_PREFIX = "/yandexmicro/ota/"
 es.MODE_DOWNGRADE = True    # раздача zip разрешена только в режиме отката
 
-# без режима отката прошивка не отдаётся вообще
+# авто-режим: прошивка есть -> zip отдаётся и без run/downgrade
 es.MODE_DOWNGRADE = False
 code, data = call("GET", "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip")
+ok = code == 200 and len(data) == 4096
+if not ok:
+    FAILS.append("OTA zip в авто-режиме")
+print(f"{'ok  ' if ok else 'FAIL'} {'OTA zip в авто-режиме (без run/downgrade)':52} -> {code} {len(data)}b")
+
+# run/no_downgrade -> 404
+_orig_nd = es.no_downgrade
+es.no_downgrade = lambda: True
+code, data = call("GET", "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip")
+es.no_downgrade = _orig_nd
 ok = code == 404
 if not ok:
-    FAILS.append("OTA выключена без downgrade")
-print(f"{'ok  ' if ok else 'FAIL'} {'OTA zip без run/downgrade -> 404':52} -> {code}")
+    FAILS.append("OTA zip при run/no_downgrade")
+print(f"{'ok  ' if ok else 'FAIL'} {'OTA zip при run/no_downgrade -> 404':52} -> {code}")
 es.MODE_DOWNGRADE = True
 
 case("OTA HEAD 200 + размер", "429", "HEAD",

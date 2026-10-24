@@ -91,7 +91,9 @@ Write-Host "=== СТЕНД ПОДНЯТ ==="
 Write-Host "  адрес машины   : $ip"
 Write-Host "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $ip"
 Write-Host "  сервер         : 53 (UDP/TCP), 80 и 443"
-Write-Host "  режим          : $(if (Test-Path "$Base\run\downgrade") { 'откат на прошивку (downgrade)' } else { 'ADB, обновления заблокированы' })"
+$hasFw = (Get-ChildItem "$Base\firmware\*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1)
+$modeText = if (Test-Path "$Base\run\no_downgrade") { 'обновления выключены (run\no_downgrade)' } elseif ($hasFw) { 'ADB + авто-прошивка (если версия не совпадает)' } else { 'ADB, обновления выключены (нет прошивки)' }
+Write-Host "  режим          : $modeText"
 $fw = Get-ChildItem "$Base\firmware\*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($fw) { Write-Host "  прошивка       : $($fw.Name) ($($fw.Length) б)" } else { Write-Host "  прошивка       : в firmware\ нет .zip (раздача прошивки недоступна)" }
 Write-Host "  лог            : $Base\log\server.log"
