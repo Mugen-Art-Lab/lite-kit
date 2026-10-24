@@ -140,6 +140,8 @@ SYNC_PROXY = os.environ.get("SYNC_PROXY") == "1"   # диагностика: п�
 
 SYNC_DUMP = os.path.join(BASE_DIR, "log", "sync_real.json")
 SYNC_TEMPLATE = os.path.join(BASE_DIR, "log", "sync_template.json")
+# базовый шаблон — «обычные» станции, он лежит в репозитории и не зависит от Mini
+SYNC_BASE = os.path.join(BASE_DIR, "scripts", "sync_template.json")
 ADBD = {"remoteActivation": True, "network": True, "fullDurationMs": 31536000000}
 
 _TEMPLATE = {"loaded": False, "data": None}
@@ -162,19 +164,17 @@ def _sanitize(d):
 
 
 def _load_template():
-    """Берём шаблон: сгенерированный -> дамп -> ничего."""
-    for path in (SYNC_TEMPLATE, SYNC_DUMP):
+    """Шаблон: базовый (Lite) -> сгенерированный; дамп Mini — только по USE_SYNC_DUMP=1."""
+    paths = [SYNC_BASE, SYNC_TEMPLATE]
+    if os.environ.get("USE_SYNC_DUMP") == "1":
+        paths.append(SYNC_DUMP)
+    for path in paths:
         if not os.path.exists(path):
             continue
         try:
             d = _sanitize(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
-        if path == SYNC_DUMP:
-            try:                                # кэшируем очищенный шаблон
-                json.dump(d, open(SYNC_TEMPLATE, "w", encoding="utf-8"), ensure_ascii=False)
-            except OSError:
-                pass
         return d
     return None
 
