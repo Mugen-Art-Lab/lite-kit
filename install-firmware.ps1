@@ -14,6 +14,16 @@ param(
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+function Test-Zip([string]$Path) {
+    try {
+        $fs = [IO.File]::OpenRead($Path)
+        $b = New-Object byte[] 2
+        [void]$fs.Read($b, 0, 2)
+        $fs.Close()
+        return ($b[0] -eq 0x50 -and $b[1] -eq 0x4B)
+    } catch { return $false }
+}
+
 $Base = Split-Path -Parent $PSCommandPath
 $FwRoot = Join-Path $Base "firmware"
 
@@ -124,7 +134,14 @@ try {
 
 $size = 0
 if (Test-Path $zipPath) { $size = (Get-Item $zipPath).Length }
-if ($size -lt 1000000) {
+if (-not $meta) {
+    # metadata.json не скачался — пробуем ещё раз, от неё зависит запасной URL
+    try {
+        Invoke-WebRequest -Uri "$url/metadata.json" -UseBasicParsing -OutFile $metaPath -TimeoutSec 30
+        $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
+    } catch { Write-Host "[!] metadata.json недоступен — запасной URL неизвестен" }
+}
+if ($size -lt 1000000 -or -not (Test-Zip $zipPath)) {
     # зеркало бывает обрезанным (~33 КБ вместо 60 МБ) — берём официальный URL из metadata.json
     $alts = @()
     if ($meta) {
@@ -136,11 +153,15 @@ if ($size -lt 1000000) {
         try {
             Invoke-WebRequest -Uri $alt -UseBasicParsing -OutFile $zipPath -TimeoutSec 900
             $size = (Get-Item $zipPath).Length
-            if ($size -gt 1000000) { break }
+            if ($size -gt 1000000 -and (Test-Zip $zipPath)) { break }
         } catch { }
     }
 }
-if ($size -lt 1000000) { Write-Host "[!] не удалось получить прошивку (размер $size б)"; exit 1 }
+if ($size -lt 1000000 -or -not (Test-Zip $zipPath)) {
+    Write-Host "[!] не удалось получить прошивку (размер $size б, zip: $(Test-Zip $zipPath))"
+    if ($meta -and $meta.crc32) { Write-Host "    ожидаемый crc32 из metadata: $($meta.crc32)" }
+    exit 1
+}
 
 $sha = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLower()
 # crc32 без Python (на Windows его может не быть) — считаем через C#

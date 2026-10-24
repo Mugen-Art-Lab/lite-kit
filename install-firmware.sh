@@ -126,7 +126,9 @@ fetch "$URL/metadata.json" > "$TMP/metadata.json" || echo "[!] metadata.json н�
 fetch "$URL/update.zip" > "$TMP/update.zip" || echo "[!] зеркало не отдало update.zip"
 
 SIZE=$(wc -c < "$TMP/update.zip" 2>/dev/null | tr -d ' ')
-if [ "${SIZE:-0}" -lt 1000000 ]; then
+ZIPOK=0
+[ "${SIZE:-0}" -gt 1000000 ] && [ "$(head -c 2 "$TMP/update.zip" 2>/dev/null)" = "PK" ] && ZIPOK=1
+if [ "$ZIPOK" = 0 ]; then
     # зеркало бывает битым/обрезанным (отдаёт ~33 КБ вместо 60 МБ) —
     # берём официальный URL из metadata.json
     ALT1=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("downloadUrl",""))' "$TMP/metadata.json" 2>/dev/null || true)
@@ -136,10 +138,13 @@ if [ "${SIZE:-0}" -lt 1000000 ]; then
         echo "[*] зеркало отдало ${SIZE:-0} б — качаю с официального URL: $ALT"
         curl -fsSL --retry 3 --connect-timeout 15 -o "$TMP/update.zip" "$ALT" || continue
         SIZE=$(wc -c < "$TMP/update.zip" | tr -d ' ')
-        [ "$SIZE" -gt 1000000 ] && break
+        if [ "$SIZE" -gt 1000000 ] && [ "$(head -c 2 "$TMP/update.zip" 2>/dev/null)" = "PK" ]; then
+            ZIPOK=1
+            break
+        fi
     done
 fi
-[ "${SIZE:-0}" -gt 1000000 ] || { echo "[!] не удалось получить прошивку (размер ${SIZE:-0} б)"; exit 1; }
+[ "$ZIPOK" = 1 ] || { echo "[!] не удалось получить прошивку (размер ${SIZE:-0} б, zip: $ZIPOK)"; exit 1; }
 
 # контрольные суммы
 read -r CRC SHA < <("$PY" - "$TMP/update.zip" <<'PY'
