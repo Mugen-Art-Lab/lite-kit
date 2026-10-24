@@ -38,8 +38,8 @@ done
 [ -z "$PYBIN" ] && PYBIN=/usr/bin/python3
 echo "[*] python: $PYBIN ($("$PYBIN" -c 'import ssl; print(ssl.OPENSSL_VERSION)' 2>/dev/null))"
 export LOCAL_IP="${LOCAL_IP:-$IP}"
-# флаг-файл: touch run/sync_proxy — включить диагностику /get_sync_info без возни с env
-[ -f "$BASE/run/sync_proxy" ] && export SYNC_PROXY=1     # манифест должен указывать на этот мак, а не на VPN-интерфейс
+# флаг-файл: touch run/sync_proxy — sync берётся у Яндекса и дополняется adbd
+[ -f "$BASE/run/sync_proxy" ] && export SYNC_PROXY=1
 
 # --- сервер :80/:443 ---
 ( cd "$BASE" && MODE=""; [ -f "$BASE/run/ota_only" ] && MODE="--ota-only"; "$PYBIN" scripts/equasar_server.py --downgrade $MODE >> "$BASE/log/server.log" 2>&1 & echo $! > "$BASE/run/server.pid" )

@@ -179,8 +179,25 @@ def _load_template():
     return None
 
 
-def sync_payload():
-    """Ответ /get_sync_info со включённым ADB — одинаково для всех моделей."""
+def _inject_adbd(d):
+    """Вписывает ADB во все ветки, которые читают разные прошивки."""
+    cfg = d.setdefault("config", {})
+    for section in ("system_config", "device_config"):
+        cfg.setdefault(section, {})["adbd"] = dict(ADBD)
+    cfg["adbd"] = dict(ADBD)
+    d["adbd"] = dict(ADBD)
+    d.setdefault("status", "ok")
+    return d
+
+
+def sync_payload(source=None):
+    """Ответ /get_sync_info со включённым ADB — одинаково для всех моделей.
+
+    source — готовый dict (например, настоящий ответ Яндекса); иначе шаблон.
+    """
+    if source is not None:
+        d = json.loads(json.dumps(source))       # копия, оригинал не портим
+        return json.dumps(_inject_adbd(d), ensure_ascii=False).encode()
     if not _TEMPLATE["loaded"]:
         _TEMPLATE["data"] = _load_template()
         _TEMPLATE["loaded"] = True
@@ -189,14 +206,7 @@ def sync_payload():
         d = json.loads(SYNC_INFO_PAYLOAD.decode())
     else:
         d = json.loads(json.dumps(base))        # копия
-
-    cfg = d.setdefault("config", {})
-    for section in ("system_config", "device_config"):
-        cfg.setdefault(section, {})["adbd"] = dict(ADBD)
-    cfg["adbd"] = dict(ADBD)
-    d["adbd"] = dict(ADBD)
-    d.setdefault("status", "ok")
-    return json.dumps(d, ensure_ascii=False).encode()
+    return json.dumps(_inject_adbd(d), ensure_ascii=False).encode()
 
 
 OK_PAYLOAD = b'{"status":"ok"}'
@@ -276,10 +286,9 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_request(self):
         clean_path = self.path.split("?")[0]
-        if SYNC_PROXY and clean_path.startswith("/get_sync_info"):
-            # диагностика: забираем настоящий ответ Яндекса и сохраняем для разбора
-            self.proxy_upstream(dump_path=os.path.join(BASE_DIR, "log", "sync_real.json"),
-                                fallback="sync")
+        if SYNC_PROXY and is_sync_path(clean_path):
+            # реальный ответ Яндекса (родные поля устройства) + adbd; при 429/5xx — шаблон
+            self.serve_sync_real(dump_path=os.path.join(BASE_DIR, "log", "sync_real.json"))
             return
         if MODE_PASSTHROUGH:
             # режим «сквозь»: ничего не подменяем, просто проксируем в настоящий Яндекс
@@ -443,6 +452,50 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             print("  >>> [OTA] файл отдан ПОЛНОСТЬЮ (%d б) <<<" % size)
         print(f"  >>> [OTA] отдано {length}б (bytes {start}-{end}/{size}) <<<")
         sys.stdout.flush()
+
+    def serve_sync_real(self, dump_path=None):
+        """Настоящий ответ Яндекса + вписанный ADB.
+
+        Ответ отдаётся как есть (со всеми полями устройства), меняется/добавляется
+        только adbd. Любая проблема (429/5xx/не JSON/обрыв) — локальный шаблон с ADB.
+        Сырой ответ пишется в dump_path только при DUMP_SYNC=1.
+        """
+        host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
+        ip = real_ip(host)
+        try:
+            body = None
+            if self.command in ("POST", "PUT"):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    body = self.rfile.read(n)
+            skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
+            hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
+            conn = PinnedHTTPS(host, ip, timeout=20)
+            conn.request(self.command, self.path, body=body, headers=hdrs)
+            r = conn.getresponse()
+            data = r.read()
+            if r.status == 200:
+                try:
+                    d = json.loads(data)
+                except (ValueError, UnicodeDecodeError):
+                    d = None
+                if isinstance(d, dict) and d:
+                    if dump_path and os.environ.get("DUMP_SYNC") == "1":
+                        try:
+                            with open(dump_path, "wb") as f:
+                                f.write(data)
+                            print(f"  >>> [DUMP] сырой ответ сохранён: {dump_path} ({len(data)}b)")
+                        except OSError as e:
+                            print(f"  >>> [DUMP] не смог сохранить: {e}")
+                    self._send_json(sync_payload(source=d))
+                    print(f"  >>> [SYNC-REAL] ответ Яндекса + adbd ({len(data)}b) <<<")
+                    return
+                print("  !!! [SYNC-REAL] 200, но не JSON — беру локальный шаблон")
+            else:
+                print(f"  !!! [SYNC-REAL] upstream {r.status} — беру локальный шаблон")
+            self._send_local_fallback("sync", f"upstream {r.status} на sync")
+        except Exception as e:
+            self._send_local_fallback("sync", f"нет связи с Яндексом ({e!r})")
 
     def serve_cached(self, ttl_ok=True, dump_path=None):
         """Проксируем с кэшем: 200 — кэшируем и отдаём; ошибка/429 — отдаём кэш, если есть."""
@@ -630,7 +683,8 @@ def main():
     if MODE_OTA_ONLY:
         print("[РЕЖИМ] OTA-ONLY — только прошивка: манифест и zip, всё остальное в Яндекс (ADB не включаем)")
     if SYNC_PROXY:
-        print("[РЕЖИМ] SYNC_PROXY — /get_sync_info проксируется, настоящий ответ пишется в log/sync_real.json")
+        print("[РЕЖИМ] SYNC_PROXY — sync: настоящий ответ Яндекса + adbd "
+              "(429/5xx → локальный шаблон)")
     print("==================================================================")
     if MODE_DOWNGRADE:
         print("РЕЖИМ: [ДАУНГРЕЙД] — Отдача официальной уязвимой прошивки Яндекса")

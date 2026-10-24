@@ -15,7 +15,7 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import equasar_server as es
 
-UPSTREAM = {"mode": "429", "body": b'{"status":"limited","message":"Too Many Requests"}'}
+UPSTREAM = {"mode": "429", "body": b'{"proxied":true}'}
 
 
 class FakeResp:
@@ -47,7 +47,7 @@ class FakeConn:
         if m == "boom":
             raise OSError("connection reset by peer")
         if m == "200":
-            return FakeResp(200, b'{"proxied":true}')
+            return FakeResp(200, UPSTREAM["body"] or b'{"proxied":true}')
         if m == "404":
             return FakeResp(404, b'{"error":"not found"}')
         return FakeResp(int(m), UPSTREAM["body"])
@@ -163,7 +163,7 @@ case("POST /set_device_capability", "429", "POST", "/set_device_capability",
 case("POST /update_device_state", "429", "POST", "/update_device_state",
      want_body=b'{"status":"ok"}')
 
-# --- диагностика SYNC_PROXY: 429 не пишется в дамп, колонке всё равно adbd ---
+# --- диагностика SYNC_PROXY: sync берётся у Яндекса и дополняется adbd ---
 def _no_dump():
     try:
         os.remove(es.SYNC_DUMP)
@@ -171,16 +171,57 @@ def _no_dump():
         pass
 
 
+def _upstream_sync_200():
+    UPSTREAM["mode"] = "200"
+    UPSTREAM["body"] = json.dumps({
+        "status": "ok",
+        "tags": ["real-answer"],
+        "config": {"device_config": {"name": "Яндекс Мини"},
+                   "system_config": {"syncd": {"pollPeriodSec": 1800}}},
+    }).encode()
+
+
+def _upstream_sync_garbage():
+    UPSTREAM["mode"] = "200"
+    UPSTREAM["body"] = b"<html>not json</html>"
+
+
+def _upstream_sync_plain():
+    UPSTREAM["mode"] = "200"
+    UPSTREAM["body"] = b'{"proxied":true}'
+
+
 es.SYNC_PROXY = True
 _no_dump()
-case("SYNC_PROXY: 429 -> adbd, дамп не пишется", "429", "GET",
+case("SYNC_PROXY: 429 -> adbd + шаблон, дамп не пишется", "429", "GET",
      "/get_sync_info?device_id=LP00", want_adbd=True)
-dump_written = os.path.exists(es.SYNC_DUMP)
-es.SYNC_PROXY = False
-if dump_written:
+if os.path.exists(es.SYNC_DUMP):
     FAILS.append("SYNC_PROXY: дамп 429 записан")
-print(f"{'ok  ' if not dump_written else 'FAIL'} "
-      f"{'SYNC_PROXY: 429 не попал в sync_real.json':52} -> dump={dump_written}")
+print(f"{'ok  ' if not os.path.exists(es.SYNC_DUMP) else 'FAIL'} "
+      f"{'SYNC_PROXY: 429 не попал в sync_real.json':52} -> dump={os.path.exists(es.SYNC_DUMP)}")
+
+_upstream_sync_200()
+UPSTREAM["mode"] = "200"
+code, data = call("GET", "/get_sync_info?device_id=LP00")
+d = json.loads(data) if data else {}
+ok = (code == 200 and d.get("tags") == ["real-answer"]
+      and d.get("config", {}).get("system_config", {}).get("adbd", {}).get("remoteActivation") is True
+      and d.get("adbd", {}).get("remoteActivation") is True)
+if not ok:
+    FAILS.append("SYNC_PROXY: реальный ответ + adbd")
+print(f"{'ok  ' if ok else 'FAIL'} {'SYNC_PROXY: 200 Яндекса + adbd (поля сохранены)':52} -> {code} tags={d.get('tags')}")
+
+_upstream_sync_garbage()
+case("SYNC_PROXY: 200 не-JSON -> шаблон + adbd", "200", "GET",
+     "/get_sync_info?device_id=LP00", want_adbd=True)
+_upstream_sync_200()
+case("SYNC_PROXY: POST sync + adbd", "200", "POST", "/get_sync_info", want_adbd=True)
+
+es.SYNC_PROXY = False
+_upstream_sync_plain()
+
+case("SYNC_PROXY выкл: sync локальный, Яндекс не трогаем", "200", "GET",
+     "/get_sync_info?device_id=LP00", want_adbd=True)
 
 # --- OTA: HEAD / Range на фейковой прошивке ---
 _ota_dir = tempfile.mkdtemp(prefix="eqota-")
