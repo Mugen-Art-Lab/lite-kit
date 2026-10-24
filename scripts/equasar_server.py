@@ -19,6 +19,13 @@ import json
 import time
 import urllib.request
 
+# Windows-консоль по умолчанию cp1251 — принудительно UTF-8, иначе падаем на «←»/«→»
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 UPSTREAM_HOST = "quasar.yandex.net"
 
 
