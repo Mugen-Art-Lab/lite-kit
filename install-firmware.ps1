@@ -213,7 +213,10 @@ $manifest = [ordered]@{
     sha256   = $sha
     note     = "скачано install-firmware.ps1 с $Mirror"
 }
-$manifest | ConvertTo-Json | Out-File -Encoding utf8 (Join-Path $FwDir "manifest.json")
+# ВАЖНО: без BOM, иначе Python-сервер не прочитает JSON (Unexpected UTF-8 BOM)
+[IO.File]::WriteAllText((Join-Path $FwDir "manifest.json"),
+    ($manifest | ConvertTo-Json),
+    (New-Object Text.UTF8Encoding($false)))
 
 Get-ChildItem -Path $FwDir -Filter *.zip | Where-Object { $_.Name -ne "$Version.zip" } | ForEach-Object {
     Write-Host "[*] удалён старый: $($_.Name)"
