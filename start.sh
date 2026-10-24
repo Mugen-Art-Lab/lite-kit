@@ -42,15 +42,21 @@ export LOCAL_IP="${LOCAL_IP:-$IP}"
 [ -f "$BASE/run/sync_proxy" ] && export SYNC_PROXY=1
 
 # --- сервер :80/:443 ---
-( cd "$BASE" && MODE=""; [ -f "$BASE/run/ota_only" ] && MODE="--ota-only"; "$PYBIN" scripts/equasar_server.py --downgrade $MODE >> "$BASE/log/server.log" 2>&1 & echo $! > "$BASE/run/server.pid" )
+# по умолчанию: ADB + обновления ЗАБЛОКИРОВАНЫ (check_updates -> hasUpdate:false, zip не отдаём)
+# включить откат на прошивку из firmware/: touch run/downgrade
+# включить режим «только прошивка» (Mini): touch run/ota_only
+ARGS=""
+[ -f "$BASE/run/downgrade" ] && ARGS="--downgrade"
+[ -f "$BASE/run/ota_only" ] && ARGS="$ARGS --ota-only"
+( cd "$BASE" && "$PYBIN" scripts/equasar_server.py $ARGS >> "$BASE/log/server.log" 2>&1 & echo $! > "$BASE/run/server.pid" )
 sleep 2
 
 echo
 echo "=== СТЕНД ПОДНЯТ ==="
 echo "  мак            : $IP"
 echo "  DNS            : quasar.yandex.net / .ru / scbh.yandex.net -> $IP"
-echo "  сервер         : 80 и 443 (серты eMudhra)
-  режим          : $( [ -f "$BASE/run/ota_only" ] && echo "только прошивка (OTA-only)" || echo "ADB + прошивка" )"
+echo "  сервер         : 80 и 443 (серты eMudhra)"
+  echo "  режим          : $(if [ -f "$BASE/run/ota_only" ]; then echo "только прошивка (OTA-only)"; elif [ -f "$BASE/run/downgrade" ]; then echo "откат на прошивку (downgrade)"; else echo "ADB, обновления заблокированы"; fi)"
 FW="$(ls "$BASE"/firmware/*.zip 2>/dev/null | head -1)"
 if [ -n "$FW" ]; then
     echo "  прошивка       : $(basename "$FW") ($(wc -c <"$FW" | tr -d ' ') б)"

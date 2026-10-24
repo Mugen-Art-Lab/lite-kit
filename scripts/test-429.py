@@ -171,6 +171,12 @@ case("POST /set_device_capability", "429", "POST", "/set_device_capability",
      want_body=b'{"status":"ok"}')
 case("POST /update_device_state", "429", "POST", "/update_device_state",
      want_body=b'{"status":"ok"}')
+case("check_updates без downgrade -> hasUpdate:false", "429", "GET",
+     "/check_updates?device_id=LP00&version=1.305.4.16&platform=yandexmini",
+     want_body=b'{"hasUpdate":false}')
+case("check_updates любой путь -> hasUpdate:false", "429", "GET",
+     "/quasar/check_updates/v2?device_id=LP00&platform=yandexmini",
+     want_body=b'{"hasUpdate":false}')
 
 # --- диагностика SYNC_PROXY: sync берётся у Яндекса и дополняется adbd ---
 def _no_dump():
@@ -302,6 +308,16 @@ with open(_zip, "wb") as f:
     f.write(b"PK\x03\x04" + b"\0" * 4092)
 es.OTA_FILE = _zip
 es.OTA_PREFIX = "/yandexmicro/ota/"
+es.MODE_DOWNGRADE = True    # раздача zip разрешена только в режиме отката
+
+# без режима отката прошивка не отдаётся вообще
+es.MODE_DOWNGRADE = False
+code, data = call("GET", "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip")
+ok = code == 404
+if not ok:
+    FAILS.append("OTA выключена без downgrade")
+print(f"{'ok  ' if ok else 'FAIL'} {'OTA zip без run/downgrade -> 404':52} -> {code}")
+es.MODE_DOWNGRADE = True
 
 case("OTA HEAD 200 + размер", "429", "HEAD",
      "/yandexmicro/ota/0.369.1.46.4778262442.20261013.297.zip", want_code=200)

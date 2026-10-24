@@ -423,7 +423,14 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
         # --- раздача OTA со своего диска (кусками, с Range) ---
         if clean_path.endswith(".zip") or clean_path.startswith(OTA_PREFIX):
-            self.serve_ota()
+            if MODE_DOWNGRADE or MODE_OTA_ONLY:
+                self.serve_ota()
+            else:
+                # обновления выключены: без манифеста сюда никто не должен ходить
+                print("  >>> [OTA] раздача прошивки отключена (нет run/downgrade или run/ota_only)")
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
             return
 
         
