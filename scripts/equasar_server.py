@@ -566,11 +566,34 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             self.proxy_upstream(fallback=_fb)
             return
             
+        if "register" in path_l:
+            self.register_passthrough()
+            return
+
         # Всё остальное (/register, /get_config, ...) — пробрасываем в настоящий Яндекс,
         # иначе колонка получает "OK" вместо реального ответа и ругается "что-то не так".
         # Но 429/5xx от Яндекса колонке не отдаём: она принимает это за провал синка.
         _fb = "sync" if is_sync_path(self.path) else ("register" if "register" in path_l else "ok")
         self.proxy_upstream(fallback=_fb)
+
+    def register_passthrough(self):
+        """Отправляем /register в Яндекс, но колонке ВСЕГДА отвечаем allvalid."""
+        host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
+        ip = real_ip(host)
+        try:
+            body = self._read_body() if self.command in ("POST", "PUT") else None
+            skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
+            hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
+            r, data = self._upstream(host, ip, body, hdrs)
+            log_yandex(f"REGISTER {self.command} {self.path} -> {r.status} ({len(data)}b)")
+            print(f"  >>> [REGISTER] Яндекс: {r.status} ({len(data)}b) — колонке отдаю allvalid <<<")
+        except Exception as e:
+            log_yandex(f"REGISTER ERROR {self.path}: {e!r}")
+            print(f"  !!! [REGISTER] Яндекс недоступен ({e!r}) — колонке отдаю allvalid")
+        payload = b'{"message":"allvalid","status":"ok"}'
+        self._send_json(payload)
+        log_local(f"REGISTER allvalid {self.path}")
+        print("  >>> [REGISTER] отдано allvalid <<<")
 
     def serve_ota(self):
         """Отдача локального OTA-файла с поддержкой Range (колонка качает кусками)."""
