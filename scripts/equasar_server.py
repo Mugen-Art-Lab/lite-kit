@@ -707,6 +707,21 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
 
 # --- встроенный DNS (Windows: dnsmasq там нет) ---
 DNS_NAMES = {b"quasar.yandex.net", b"quasar.yandex.ru", b"scbh.yandex.net"}
+
+
+def local_ips():
+    """Все IPv4 этой машины (LAN, хот-спот, Wi-Fi) — чтобы ответить тем, до кого клиент дотянется."""
+    ips = []
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
+                ips.append(ip)
+    except Exception:
+        pass
+    primary = _local_ip()
+    if primary and primary not in ips:
+        ips.insert(0, primary)
+    return ips or [LOCAL_IP]
 DNS_UPSTREAMS = [("1.1.1.1", 53), ("8.8.8.8", 53), ("77.88.8.8", 53)]
 
 
@@ -730,7 +745,7 @@ def _dns_qname(data):
 
 
 def _dns_reply(query, an_ip=None):
-    """Ответ: an_ip задан -> A-запись; иначе NODATA (для AAAA и прочего)."""
+    """Ответ: an_ip (строка или список) -> A-записи; иначе NODATA (AAAA и прочее)."""
     qname, qtype = _dns_qname(query)
     question = query[12:]
     # обрезаем question ровно до конца QNAME + 4 байта (qtype+qclass)
@@ -741,10 +756,13 @@ def _dns_reply(query, an_ip=None):
     question = query[12:qend]
     flags = b"\x81\x80"                     # ответ, рекурсия доступна
     if an_ip is not None:
-        header = query[:2] + flags + b"\x00\x01\x00\x01\x00\x00\x00\x00"
-        answer = (b"\xc0\x0c" + b"\x00\x01" + b"\x00\x01" +
-                  int(os.environ.get("DNS_TTL", "60")).to_bytes(4, "big") +
-                  b"\x00\x04" + socket.inet_aton(an_ip))
+        ips = [an_ip] if isinstance(an_ip, str) else [x for x in an_ip if x]
+        if not ips:
+            return _dns_reply(query)
+        header = query[:2] + flags + b"\x00\x01" + len(ips).to_bytes(2, "big") + b"\x00\x00\x00\x00"
+        ttl = int(os.environ.get("DNS_TTL", "60")).to_bytes(4, "big")
+        answer = b"".join(b"\xc0\x0c" + b"\x00\x01" + b"\x00\x01" + ttl +
+                          b"\x00\x04" + socket.inet_aton(ip) for ip in ips)
         return header + question + answer
     header = query[:2] + flags + b"\x00\x01\x00\x00\x00\x00\x00\x00"
     return header + question
@@ -767,12 +785,23 @@ def _dns_forward(query):
     return None
 
 
-def _dns_handle(query):
+def _best_ips(client_ip=None):
+    """Если клиент пришёл из другой подсети (хот-спот, второй Wi-Fi) — отвечаем IP из ЕГО сети."""
+    ips = local_ips()
+    if client_ip and not client_ip.startswith("127."):
+        net = client_ip.rsplit(".", 1)[0] + "."
+        same = [ip for ip in ips if ip.startswith(net)]
+        if same:
+            return same
+    return ips[:4]
+
+
+def _dns_handle(query, client_ip=None):
     qname, qtype = _dns_qname(query)
     if qname in DNS_NAMES:
-        # A спрашивают -> отдаём свой IP; AAAA и остальное -> NODATA (чтобы не ушли в IPv6)
+        # A спрашивают -> отдаём свой IP (или несколько); AAAA и остальное -> NODATA
         if qtype == 1:
-            return _dns_reply(query, LOCAL_IP)
+            return _dns_reply(query, _best_ips(client_ip))
         return _dns_reply(query)
     return _dns_forward(query) or _dns_reply(query)
 
@@ -782,7 +811,7 @@ def run_dns(port=53):
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         udp.bind(("0.0.0.0", port))
-        print(f"[*] DNS сервер слушает UDP {port} (quasar.* -> {LOCAL_IP})")
+        print(f"[*] DNS сервер слушает UDP {port} (quasar.* -> {", ".join(local_ips())})")
         sys.stdout.flush()
 
         def udp_loop():
@@ -790,7 +819,7 @@ def run_dns(port=53):
                 try:
                     data, addr = udp.recvfrom(4096)
                     if data:
-                        udp.sendto(_dns_handle(data), addr)
+                        udp.sendto(_dns_handle(data, addr[0]), addr)
                 except Exception as e:
                     print(f"[!] DNS UDP: {e!r}")
 
@@ -813,6 +842,7 @@ def run_dns(port=53):
 
 def _dns_tcp_conn(conn):
     try:
+        peer = conn.getpeername()[0]
         conn.settimeout(5)
         head = conn.recv(2)
         if len(head) < 2:
@@ -824,7 +854,7 @@ def _dns_tcp_conn(conn):
             if not chunk:
                 break
             data += chunk
-        resp = _dns_handle(data)
+        resp = _dns_handle(data, peer)
         conn.sendall(len(resp).to_bytes(2, "big") + resp)
     except Exception:
         pass
