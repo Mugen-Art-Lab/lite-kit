@@ -177,6 +177,20 @@ Enter = значение по умолчанию.
 
 ---
 
+## После root: Entware и `opkg`
+
+Если обвязка джейлбрейка экспортирует `LD_PRELOAD`/`LD_LIBRARY_PATH`, `opkg`
+падает (`CANNOT LINK EXECUTABLE`, segfault). Правильная обёртка — снять оба
+только для `opkg`, `PATH` оставить:
+
+```sh
+opkg() { PATH="$OPT/bin:$OPT/sbin:$PATH" env -u LD_LIBRARY_PATH -u LD_PRELOAD "$OPKG" "$@"; }
+```
+
+Подробно (куда положить, fallback, проверка): [docs/root-opkg.md](docs/root-opkg.md).
+
+---
+
 ## Sync: что отдаётся колонке
 
 - `200` от Яндекса → отдаём **его же ответ** (родные поля модели), но `adbd`
