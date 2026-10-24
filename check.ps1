@@ -17,10 +17,12 @@ if (-not $myIp) { Write-Host "[!] не смог определить локал�
 $net = $myIp.Substring(0, $myIp.LastIndexOf("."))
 Write-Host "[*] ищу колонку (MAC b8:87:6e = Yandex) в $net.0/24..."
 
-# прогреваем ARP
-1..254 | ForEach-Object -Parallel {
-    Test-Connection -ComputerName "$using:net.$_" -Count 1 -Quiet -TimeoutSeconds 1 | Out-Null
-} -ThrottleLimit 64 -ErrorAction SilentlyContinue
+# прогреваем ARP (параллельно, работает и в PowerShell 5.1)
+$ping = New-Object System.Net.NetworkInformation.Ping
+[System.Threading.Tasks.Parallel]::ForEach([int[]](1..254), [Action[int]]{
+    param($i)
+    try { $ping.Send("$net.$i", 300) | Out-Null } catch {}
+})
 
 $rows = arp -a | Select-String "b8-87-6e" | ForEach-Object {
     if ($_.Line -match "([0-9]{1,3}(\.[0-9]{1,3}){3})") { $Matches[1] }

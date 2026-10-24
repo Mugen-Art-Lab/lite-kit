@@ -83,6 +83,6 @@ if ($fw) { Write-Host "  прошивка       : $($fw.Name) ($($fw.Length) б)
 Write-Host "  лог            : $Base\log\server.log"
 Write-Host ""
 Write-Host "Проверка DNS на этой машине (должно быть $ip):"
-try { (Resolve-DnsName -Name quasar.yandex.net -Server $ip -Type A -DnsOnly -ErrorAction Stop | Where-Object {$_.IPAddress}).IPAddress } catch { Write-Host "  (проверка не удалась: $_ )" }
+& $py "$Base\scripts\dnscheck.py" $ip quasar.yandex.net
 Write-Host ""
 Write-Host "Дальше: в роутере поставь DNS = $ip, потом сбрасывай колонку (см. README.md)."
