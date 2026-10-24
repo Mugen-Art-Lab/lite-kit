@@ -224,6 +224,28 @@ def upstream_soft_error(status):
     return status in UPSTREAM_SOFT_ERRORS or status >= 500
 
 
+# ключи, значения которых не должны попадать в лог
+SECRET_MARKERS = ("token", "secret", "password", "private", "authorization",
+                  "cookie", "wifi_hash", "latitude", "longitude", "certificate")
+
+
+def _masked(obj):
+    if isinstance(obj, dict):
+        return {k: ("<скрыто>" if any(m in str(k).lower() for m in SECRET_MARKERS)
+                    else _masked(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_masked(x) for x in obj]
+    return obj
+
+
+def _masked_json(payload):
+    """JSON для лога: секреты/координаты заменены на <скрыто>."""
+    try:
+        return json.dumps(_masked(json.loads(payload)), ensure_ascii=False)
+    except Exception:
+        return payload[:1000].decode("utf-8", "replace")
+
+
 CACHE_DIR = os.path.join(BASE_DIR, "log", "cache")
 
 
@@ -258,12 +280,20 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def _drain_body(self):
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-            if n > 0:
-                self.rfile.read(n)
-        except (ValueError, OSError):
-            pass
+        self._read_body()
+
+    def _read_body(self):
+        """Читает тело запроса один раз (повторные вызовы отдают то же самое)."""
+        if getattr(self, "_body", None) is None:
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            try:
+                self._body = self.rfile.read(n) if n > 0 else b""
+            except OSError:
+                self._body = b""
+        return self._body
 
     def _send_json(self, payload, code=200):
         self.send_response(code)
@@ -272,6 +302,39 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(payload)
+
+    def _log_sync_request(self):
+        """Что именно спросила колонка: путь, заголовки, тело (секреты маскируются)."""
+        body = self._read_body() if self.command in ("POST", "PUT") else b""
+        hdrs = "; ".join(
+            f"{k}: {'<скрыто>' if any(m in k.lower() for m in SECRET_MARKERS) else v}"
+            for k, v in self.headers.items()
+            if k.lower() not in ("host", "connection", "content-length"))
+        print(f"  <<< [SYNC←] {self.command} {self.path} от {self.client_address[0]}")
+        print(f"      заголовки: {hdrs[:800]}")
+        if body:
+            print(f"      тело {len(body)}b: {_masked_json(body)}")
+        sys.stdout.flush()
+
+    def _log_payload(self, tag, payload, source):
+        """Что именно уходит колонке: размер, состояние adbd и сам JSON (без секретов)."""
+        status = "нет данных"
+        try:
+            d = json.loads(payload)
+            cfg = d.get("config") or {}
+            marks = {
+                "config.system_config.adbd": (cfg.get("system_config") or {}).get("adbd"),
+                "config.device_config.adbd": (cfg.get("device_config") or {}).get("adbd"),
+                "config.adbd": cfg.get("adbd"),
+                "top.adbd": d.get("adbd"),
+            }
+            status = ", ".join(f"{k}={'on' if v else 'НЕТ'}" for k, v in marks.items())
+            text = _masked_json(payload)
+        except Exception:
+            text = payload[:1000].decode("utf-8", "replace")
+        print(f"  >>> [{tag}] payload {len(payload)}b, источник: {source}, adbd: {status}")
+        print(f"      {text[:4000]}{' …(обрезано)' if len(text) > 4000 else ''}")
+        sys.stdout.flush()
 
     def _send_local_fallback(self, kind, why):
         """Апстрим ответил 429/5xx — колонке всё равно отдаём 200.
@@ -283,6 +346,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(payload)
         print(f"  >>> [FALLBACK] {why} — отдаю локально 200 "
               f"({'sync + adbd:true' if kind == 'sync' else 'ok'}) <<<")
+        if kind == "sync":
+            self._log_payload("SYNC→", payload, "локальный шаблон (fallback)")
 
     def handle_request(self):
         clean_path = self.path.split("?")[0]
@@ -366,6 +431,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if "get_sync_info" in clean_path.lower():
+            self._log_sync_request()
             try:
                 _p = sync_payload()
             except Exception as e:
@@ -373,6 +439,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 _p = SYNC_INFO_PAYLOAD
             self._send_json(_p)
             print("  >>> [SUCCESS] Колонке отправлена команда активации ADB! <<<")
+            self._log_payload("SYNC→", _p, "локальный шаблон")
             return
             
         if clean_path in ["/check_updates", "/quasar/check_updates"] and is_column:
@@ -462,12 +529,9 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         """
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
         ip = real_ip(host)
+        self._log_sync_request()
         try:
-            body = None
-            if self.command in ("POST", "PUT"):
-                n = int(self.headers.get("Content-Length") or 0)
-                if n:
-                    body = self.rfile.read(n)
+            body = self._read_body() if self.command in ("POST", "PUT") else None
             skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
             hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
             conn = PinnedHTTPS(host, ip, timeout=20)
@@ -487,8 +551,10 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                             print(f"  >>> [DUMP] сырой ответ сохранён: {dump_path} ({len(data)}b)")
                         except OSError as e:
                             print(f"  >>> [DUMP] не смог сохранить: {e}")
-                    self._send_json(sync_payload(source=d))
+                    payload = sync_payload(source=d)
+                    self._send_json(payload)
                     print(f"  >>> [SYNC-REAL] ответ Яндекса + adbd ({len(data)}b) <<<")
+                    self._log_payload("SYNC-REAL→", payload, "настоящий ответ Яндекса")
                     return
                 print("  !!! [SYNC-REAL] 200, но не JSON — беру локальный шаблон")
             else:
@@ -504,11 +570,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
         ip = real_ip(host)
         kind = "sync" if is_sync_path(self.path) else "ok"
-        body = None
-        if self.command in ("POST", "PUT"):
-            n = int(self.headers.get("Content-Length") or 0)
-            if n:
-                body = self.rfile.read(n)
+        body = self._read_body() if self.command in ("POST", "PUT") else None
         skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
         hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
         try:
@@ -561,11 +623,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or UPSTREAM_HOST).split(":")[0]
         ip = real_ip(host)
         try:
-            body = None
-            if self.command in ("POST", "PUT"):
-                n = int(self.headers.get("Content-Length") or 0)
-                if n:
-                    body = self.rfile.read(n)
+            body = self._read_body() if self.command in ("POST", "PUT") else None
             skip = ("host", "connection", "content-length", "accept-encoding", "transfer-encoding")
             hdrs = {k: v for k, v in self.headers.items() if k.lower() not in skip}
             conn = PinnedHTTPS(host, ip, timeout=20)

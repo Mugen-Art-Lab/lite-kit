@@ -52,6 +52,20 @@ rm -f run/sync_proxy
 ./stop.sh && sudo ./start.sh
 ```
 
+## Что видно в логе
+
+На каждый sync пишется и запрос, и то, что уходит колонке:
+
+```
+<<< [SYNC←] GET /get_sync_info?device_id=…&platform=yandexmini от 192.168.0.171
+    заголовки: User-Agent: …; Accept: …
+>>> [SYNC-REAL→] payload 10846b, источник: настоящий ответ Яндекса, adbd: config.system_config.adbd=on, config.device_config.adbd=on, config.adbd=on, top.adbd=on
+    {"status":"ok","config":{...}}      ← тела целиком, секреты заменены на <скрыто>
+```
+
+Маскируются: `*token*`, `*secret*`, `*password*`, `*private*`, `*auth*`, `*cookie*`,
+`wifi_hash`, `latitude`, `longitude`, `certificate`.
+
 ## Проверка
 
 ```bash
