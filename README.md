@@ -258,6 +258,31 @@ opkg() { PATH="$OPT/bin:$OPT/sbin:$PATH" env -u LD_LIBRARY_PATH -u LD_PRELOAD "$
 
 ## Если что-то не так
 
+**Сначала — диагностика в один архив.** Запусти и ответь на 3 вопроса
+(что происходит, что дословно говорит колонка, когда началось):
+
+```bash
+./diag.sh                      # Linux / macOS
+```
+```powershell
+.\diag.ps1                     # Windows
+```
+
+Скрипт соберёт: ответы, `log/yandex.log` / `local.log` / `dns.log` / `server.log`
+(последние 5000 строк, токены замаскированы), DNS-ответы для
+`quasar.yandex.net` / `yandex.ru` / `okko.tv` / `music.yandex.ru` (+ контроль
+через `8.8.8.8`), слушателей `53/80/443`, процессы стенда, ответы самого стенда
+(`generate_204`, `check_updates`, `sync`), содержимое `firmware/` (размер,
+zip-магия, crc32, sha256 — сразу видно обрезанный файл 33212 б), дерево папок,
+`run/`, состояние git, `config/` и сертификаты.
+
+Результат — `lite-kit-diag-<дата>_<время>.zip` **в корне репозитория**.
+Его и отправляй: по архиву видно, на каком шаге сломалось.
+
+Флаги: `--no-ask` (без вопросов), `--column <ip>`, `--out <папка>`
+(в PowerShell: `-NoAsk`, `-Column`, `-Out`).
+
+
 | Симптом | Что смотреть |
 |---|---|
 | Windows: `start.ps1` просит UAC и закрывается | согласись с UAC, окно откроется заново уже от админа |
@@ -273,8 +298,10 @@ opkg() { PATH="$OPT/bin:$OPT/sbin:$PATH" env -u LD_LIBRARY_PATH -u LD_PRELOAD "$
 
 ```
 start.ps1 / stop.ps1 / check.ps1        стенд, остановка, поиск колонки (Windows)
+diag.ps1                               диагностика в один архив (Windows)
 install-firmware.ps1                   меню/CLI установки прошивки (Windows)
 start.sh / stop.sh / check.sh          то же для Linux/macOS
+diag.sh                                диагностика в один архив (Linux/macOS)
 install-firmware.sh                    то же для Linux/macOS
 scripts/equasar_server.py              DNS + HTTP/HTTPS, sync, OTA
 scripts/dnscheck.py                    проверка DNS-ответа стенда

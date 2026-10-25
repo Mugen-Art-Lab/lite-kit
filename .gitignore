@@ -7,3 +7,6 @@ firmware/*.zip
 __pycache__/
 .DS_Store
 certs/*.bak*
+lite-kit-diag-*.zip
+lite-kit-diag-*.tgz
+.diag-*/
