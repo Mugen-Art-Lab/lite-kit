@@ -673,6 +673,19 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 plat = (q.get("platform") or [""])[0]
             except Exception:
                 pass
+            # factory-прошивка: принудительно ничего не предлагаем (иначе ломается активация,
+            # например на Лайт 2 — апдейт срывает привязку раньше, чем включится ADB)
+            if "factory" in (cur or "").lower():
+                payload = NO_UPDATE_PAYLOAD
+                print(f"  >>> [OTA] колонка на factory ({cur}) — прошивку не предлагаю <<<")
+                log_local(f"OTA factory {self.path} -> hasUpdate:false")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+
             fw = fw_manifest(plat) if plat else None
             if not fw and OTA_FILE:
                 # старая плоская раскладка firmware/<версия>.zip

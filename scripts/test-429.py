@@ -201,6 +201,8 @@ def _fw_case(name, version, want_update, block=False):
     print(f"{'ok  ' if ok else 'FAIL'} {name:52} -> {code} hasUpdate={got}")
 
 
+_fw_case("factory: прошивку не предлагаем", "0.52.1.101.PVT.factory", False)
+_fw_case("factory (сборка 2022): прошивку не предлагаем", "0.4.1.5.1180614597.20220111.factory-3.factory", False)
 _fw_case("авто-прошивка: версия другая -> манифест", "0.0.9", True)
 _fw_case("авто-прошивка: версия совпала -> hasUpdate:false", "0.1.2.3", False)
 _fw_case("авто-прошивка: run/no_downgrade -> выкл", "0.0.9", False, block=True)
