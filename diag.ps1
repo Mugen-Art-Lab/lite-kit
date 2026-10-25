@@ -164,6 +164,79 @@ $portLines += (Get-CimInstance Win32_Process -Filter "Name like '%python%'" -Err
                ForEach-Object { "  pid=$($_.ProcessId) $($_.CommandLine)" })
 Save-Text "$Work\ports.txt" $portLines
 
+# ---------------------------------------------------------------- DHCP / нет интернета
+$linkLocal = $false
+if ($Column -like "169.254.*") { $linkLocal = $true }
+$pingOk = $false
+if ($Column) { $pingOk = [bool](Test-Connection -ComputerName $Column -Count 1 -Quiet -ErrorAction SilentlyContinue) }
+$colMac = ""
+if ($Column) {
+    $nb = Get-NetNeighbor -IPAddress $Column -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($nb) { $colMac = $nb.LinkLayerAddress }
+}
+$leases = @()
+$lh = "$env:SystemRoot\System32\dhcp\dhcpsrvlog*.log"
+$leases += (Get-ChildItem $lh -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+
+$dhcpLines = @(
+    "== колонка: $(if ($Column) { $Column } else { 'не найдена' })",
+    "== MAC: $(if ($colMac) { $colMac } else { 'неизвестен' })",
+    "== link-local (169.254.x.x, т.е. DHCP не сработал): $(if ($linkLocal) { 'ДА' } else { 'нет' })",
+    "== пинг: $(if ($pingOk) { 'ок' } else { 'НЕ ОТВЕЧАЕТ' })",
+    "",
+    "== соседи (ARP) для этого адреса:",
+    ((Get-NetNeighbor -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $Column } |
+      ForEach-Object { "$($_.IPAddress) $($_.LinkLayerAddress) $($_.State)" }) -join "`r`n")
+)
+Save-Text "$Work\dhcp.txt" $dhcpLines
+
+if ($choice -eq "4" -or $linkLocal -or -not $pingOk) {
+    $macText = if ($colMac) { $colMac } else { "b8:87:6e:xx:xx:xx" }
+    $advice = @(
+        "КОЛОНКА НЕ ПОЛУЧАЕТ АДРЕС / НЕТ ИНТЕРНЕТА",
+        ""
+    )
+    if ($linkLocal) {
+        $advice += "В ARP у колонки $Column - адрес 169.254.x.x."
+        $advice += "Это значит: DHCP ей адрес НЕ ВЫДАЛ, и она назначила его сама себе."
+        $advice += ""
+    }
+    $advice += @(
+        "Что проверить на роутере (по порядку):",
+        "",
+        "1) DHCP вообще включён? Какой пул и срок аренды?",
+        "   (обычно 192.168.0.100-250, lease 24h)",
+        "",
+        "2) В списке аренд найди MAC колонки: $macText",
+        "   - если аренда есть, но колонка её не берёт - удали эту аренду;",
+        "   - если аренда старая/от другой сети - тоже удали.",
+        "",
+        "3) Убери статическую привязку (reservation) для этого MAC.",
+        "   Нужно, чтобы колонка САМА выбрала свободный адрес из пула,",
+        "   а не пыталась получить зарезервированный/чужой.",
+        "",
+        "4) Проверь, что не мешает:",
+        "   - изоляция клиентов / AP isolation / 'гостевая сеть';",
+        "   - MAC-фильтр;",
+        "   - лимит клиентов на DHCP или на Wi-Fi;",
+        "   - второй DHCP-сервер в сети (роутер + что-то ещё).",
+        "",
+        "5) Перезагрузи колонку (вынуть из розетки на 10 с).",
+        "   После старта она должна получить адрес и появиться в арендах.",
+        "",
+        "6) Если адрес так и не появился - временно поставь в роутере",
+        "   DHCP-пул пошире и lease покороче (1h), затем снова перезагрузи.",
+        "",
+        "7) Когда адрес появился - проверь доступность:",
+        "   ping $(if ($Column) { $Column } else { '<ip>' }) и порт 5555 (ADB)."
+    )
+    Save-Text "$Work\advice.txt" $advice
+    Write-Host ""
+    if ($linkLocal) { Write-Host "!!! DHCP: колонка на 169.254 - адрес ей не выдали" }
+    else            { Write-Host "!!! DHCP/сеть: колонка не отвечает или без адреса" }
+    Write-Host "    Подробный чек-лист по DHCP - advice.txt в архиве."
+}
+
 # ---------------------------------------------------------------- пробы стенда
 $idx = @("== пробы стенда (127.0.0.1 и $(if ($myIp) { $myIp } else { '-' })):")
 $hostIp = if ($myIp) { $myIp } else { "127.0.0.1" }
@@ -320,6 +393,8 @@ $readme = @(
     "net.txt       - адреса, маршруты, DNS,"
     "dns.txt       - ответы DNS для quasar/yandex/okko/music (+ контроль 8.8.8.8)",
     "ports.txt     - кто слушает 53/80/443 + процессы стенда",
+    "dhcp.txt      - адрес/MAC колонки, link-local, ARP",
+    "advice.txt    - что делать, если колонка не получила IP",
     "probe/        - ответы самого стенда: generate_204, check_updates, sync",
     "firmware.txt  - что лежит в firmware/: размер, zip-магия, crc32, sha256",
     "tree.txt      - структура папки, флаги run/, состояние git",

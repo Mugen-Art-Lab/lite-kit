@@ -198,6 +198,72 @@ q() {  # q <имя> [сервер]
     ps -Ao pid,args 2>/dev/null | grep -E "[e]quasar_server|[q]uasar" | head -10
 } > "$W/ports.txt" 2>&1
 
+# ---------------------------------------------------------------- DHCP / нет интернета
+LINKLOCAL=0
+case "${COLUMN:-}" in 169.254.*) LINKLOCAL=1 ;; esac
+PING_OK=0
+if [ -n "$COLUMN" ]; then
+    if [ "$OS" = "Darwin" ]; then ping -c1 -W1000 "$COLUMN" >/dev/null 2>&1 && PING_OK=1
+    else ping -c1 -W1 "$COLUMN" >/dev/null 2>&1 && PING_OK=1; fi
+fi
+COL_MAC="$( [ -n "$COLUMN" ] && arp -an 2>/dev/null | grep -F "($COLUMN)" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1 )"
+LEASE_LINE="$(command -v dhcp-lease-list >/dev/null 2>&1 && dhcp-lease-list 2>/dev/null | head -20)"
+
+{
+    echo "== колонка: ${COLUMN:-не найдена}"
+    echo "== MAC: ${COL_MAC:-неизвестен}"
+    echo "== link-local (169.254.x.x, т.е. DHCP не сработал): $([ "$LINKLOCAL" = "1" ] && echo ДА || echo нет)"
+    echo "== пинг: $([ "$PING_OK" = "1" ] && echo ок || echo НЕ ОТВЕЧАЕТ)"
+    echo
+    echo "== ARP-строки для этого MAC:"
+    [ -n "${COL_MAC:-}" ] && arp -an 2>/dev/null | grep -i "$COL_MAC" || echo "(нет)"
+    echo
+    echo "== DHCP-аренды на этой машине (если есть):"
+    echo "${LEASE_LINE:-(не применимо)}"
+} > "$W/dhcp.txt" 2>&1
+
+if [ "$CHOICE" = "4" ] || [ "$LINKLOCAL" = "1" ] || [ "$PING_OK" = "0" ]; then
+    {
+        echo "КОЛОНКА НЕ ПОЛУЧАЕТ АДРЕС / НЕТ ИНТЕРНЕТА"
+        echo
+        if [ "$LINKLOCAL" = "1" ]; then
+            echo "В ARP у колонки ${COLUMN} — адрес 169.254.x.x."
+            echo "Это значит: DHCP ей адрес НЕ ВЫДАЛ, и она назначила его сама себе."
+            echo
+        fi
+        echo "Что проверить на роутере (по порядку):"
+        echo
+        echo "1) DHCP вообще включён? Какой пул и срок аренды?"
+        echo "   (обычно 192.168.0.100-250, lease 24h)"
+        echo
+        echo "2) В списке аренд найди MAC колонки: ${COL_MAC:-b8:87:6e:xx:xx:xx}"
+        echo "   - если аренда есть, но колонка её не берёт — удали эту аренду;"
+        echo "   - если аренда старая/от другой сети — тоже удали."
+        echo
+        echo "3) Убери статическую привязку (reservation) для этого MAC."
+        echo "   Нужно, чтобы колонка САМА выбрала свободный адрес из пула,"
+        echo "   а не пыталась получить зарезервированный/чужой."
+        echo
+        echo "4) Проверь, что не мешает:"
+        echo "   - изоляция клиентов / AP isolation / 'гостевая сеть';"
+        echo "   - MAC-фильтр;"
+        echo "   - лимит клиентов на DHCP или на Wi-Fi;"
+        echo "   - второй DHCP-сервер в сети (роутер + что-то ещё)."
+        echo
+        echo "5) Перезагрузи колонку (вынуть из розетки на 10 с)."
+        echo "   После старта она должна получить адрес и появиться в арендах."
+        echo
+        echo "6) Если адрес так и не появился — временно поставь в роутере"
+        echo "   DHCP-пул пошире и lease покороче (1h), затем снова перезагрузи."
+        echo
+        echo "7) Когда адрес появился — проверь доступность:"
+        echo "   ping ${COLUMN:-<ip>} и порт 5555 (ADB)."
+    } > "$W/advice.txt"
+    echo
+    echo "!!! DHCP: $([ "$LINKLOCAL" = "1" ] && echo "колонка на 169.254 — адрес ей не выдали" || echo "колонка не отвечает/без адреса")"
+    echo "    Подробный чек-лист по DHCP — advice.txt в архиве."
+fi
+
 # ---------------------------------------------------------------- пробы стенда
 probe() {  # probe <имя-файла> <curl-аргументы...>
     local name="$1"; shift
@@ -313,6 +379,8 @@ done
     echo "net.txt       — адреса, маршруты, DNS, ARP (колонки: b8:87:6e)"
     echo "dns.txt       — ответы DNS для quasar/yandex/okko/music"
     echo "ports.txt     — кто слушает 53/80/443 + процессы стенда"
+    echo "dhcp.txt      — адрес/MAC колонки, link-local, ARP, аренды"
+    echo "advice.txt    — что делать, если колонка не получила IP (нет интернета)"
     echo "probe/        — ответы самого стенда: generate_204, check_updates, sync"
     echo "firmware.txt  — что лежит в firmware/: размер, zip-магия, crc32, sha256"
     echo "tree.txt      — структура папки, флаги run/, состояние git"
