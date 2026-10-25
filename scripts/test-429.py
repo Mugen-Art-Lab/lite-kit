@@ -201,27 +201,26 @@ def _fw_case(name, version, want_update, block=False):
     print(f"{'ok  ' if ok else 'FAIL'} {name:52} -> {code} hasUpdate={got}")
 
 
-_fw_case("factory: прошивку не предлагаем", "0.52.1.101.PVT.factory", False)
-_fw_case("factory (сборка 2022): прошивку не предлагаем", "0.4.1.5.1180614597.20220111.factory-3.factory", False)
+_fw_case("factory: зип есть -> манифест", "0.52.1.101.PVT.factory", True)
 _fw_case("авто-прошивка: версия другая -> манифест", "0.0.9", True)
 _fw_case("авто-прошивка: версия совпала -> hasUpdate:false", "0.1.2.3", False)
 _fw_case("авто-прошивка: run/no_downgrade -> выкл", "0.0.9", False, block=True)
 
 es.OTA_FILE = None
 code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
-ok = code == 200 and data == b'{"proxied":true}'
+ok = code == 200 and b'"hasUpdate":false' in data
 if not ok:
-    FAILS.append("авто-прошивка: нет файла -> в Яндекс")
-print(f"{'ok  ' if ok else 'FAIL'} {'авто-прошивка: нет файла -> ответ Яндекса':52} -> {code}")
+    FAILS.append("авто-прошивка: нет файла -> false")
+print(f"{'ok  ' if ok else 'FAIL'} {'авто-прошивка: нет файла -> hasUpdate:false':52} -> {code}")
 
 # прошивка 0.x (yandexmicro) не должна предлагаться колонке yandexmini
 es.OTA_FILE = _fw
 es.OTA_VERSION = "0.1.2.3"
 code, data = call("GET", "/check_updates?device_id=LP00&version=0.0.9&platform=yandexmini")
-ok = code == 200 and data == b'{"proxied":true}'
+ok = code == 200 and b'"hasUpdate":false' in data
 if not ok:
-    FAILS.append("платформа не совпала -> в Яндекс")
-print(f"{'ok  ' if ok else 'FAIL'} {'другая платформа -> ответ Яндекса':52} -> {code}")
+    FAILS.append("платформа не совпала -> hasUpdate:false")
+print(f"{'ok  ' if ok else 'FAIL'} {'другая платформа -> hasUpdate:false':52} -> {code}")
 
 # --- новая раскладка firmware/<platform>/<version>.zip ---
 _tmp_root = tempfile.mkdtemp(prefix="eqfw-")
@@ -244,10 +243,10 @@ if not ok:
 print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: манифест для своей модели':52} -> {code}")
 
 code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
-ok = code == 200 and data == b'{"proxied":true}'
+ok = code == 200 and b'"hasUpdate":false' in data
 if not ok:
-    FAILS.append("новая раскладка: чужая платформа -> Яндекс")
-print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: чужая модель -> Яндекс':52} -> {code}")
+    FAILS.append("новая раскладка: чужая платформа -> false")
+print(f"{'ok  ' if ok else 'FAIL'} {'firmware/<platform>/: чужая модель -> false':52} -> {code}")
 
 code, data = call("GET", "/yandexmini/ota/1.305.4.16.3237824040.20250721.zip", )
 ok = code == 200 and len(data) == 2052
@@ -278,22 +277,22 @@ if not ok:
 print(f"{'ok  ' if ok else 'FAIL'} {'плоский zip: платформа по зеркалу -> манифест':52} -> {code}")
 
 code, data = call("GET", "/check_updates?device_id=LP00&version=1.0.0&platform=yandexmicro")
-ok = code == 200 and data == b'{"proxied":true}'
+ok = code == 200 and b'"hasUpdate":false' in data
 if not ok:
-    FAILS.append("плоский zip: чужая платформа -> Яндекс")
-print(f"{'ok  ' if ok else 'FAIL'} {'плоский zip: чужая платформа -> Яндекс':52} -> {code}")
+    FAILS.append("плоский zip: чужая платформа -> false")
+print(f"{'ok  ' if ok else 'FAIL'} {'плоский zip: чужая платформа -> false':52} -> {code}")
 
 es.mirror_platform = _saved_mp
 es.BASE_DIR = _saved_base2
 shutil.rmtree(_tmp2, ignore_errors=True)
 
 es.OTA_FILE, es.OTA_VERSION = _saved_ota, _saved_ver
-case("check_updates без прошивки -> ответ Яндекса", "200", "GET",
+case("check_updates без прошивки -> hasUpdate:false", "200", "GET",
      "/check_updates?device_id=LP00&version=1.305.4.16&platform=yandexmini",
-     want_body=b'{"proxied":true}')
-case("check_updates любой путь -> в Яндекс", "200", "GET",
+     want_body=b'{"hasUpdate":false}')
+case("check_updates любой путь -> hasUpdate:false", "200", "GET",
      "/quasar/check_updates/v2?device_id=LP00&platform=yandexmini",
-     want_body=b'{"proxied":true}')
+     want_body=b'{"hasUpdate":false}')
 
 # --- диагностика SYNC_PROXY: sync берётся у Яндекса и дополняется adbd ---
 def _no_dump():

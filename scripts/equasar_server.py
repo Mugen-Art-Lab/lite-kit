@@ -673,19 +673,6 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 plat = (q.get("platform") or [""])[0]
             except Exception:
                 pass
-            # factory-прошивка: принудительно ничего не предлагаем (иначе ломается активация,
-            # например на Лайт 2 — апдейт срывает привязку раньше, чем включится ADB)
-            if "factory" in (cur or "").lower():
-                payload = NO_UPDATE_PAYLOAD
-                print(f"  >>> [OTA] колонка на factory ({cur}) — прошивку не предлагаю <<<")
-                log_local(f"OTA factory {self.path} -> hasUpdate:false")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-                return
-
             fw = fw_manifest(plat) if plat else None
             if not fw and OTA_FILE:
                 # старая плоская раскладка firmware/<версия>.zip
@@ -703,9 +690,8 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                     fw = {"path": OTA_FILE, "name": os.path.basename(OTA_FILE),
                           "version": OTA_VERSION, "platform": legacy_plat}
             if plat and fw and plat != (fw.get("platform") or plat):
-                print(f"  >>> [OTA] платформа колонки {plat} != прошивки {fw.get('platform')} — проксирую в Яндекс <<<")
-                self.proxy_upstream(fallback="ok")
-                return
+                print(f"  >>> [OTA] платформа колонки {plat} != прошивки {fw.get('platform')} — прошивку не даю <<<")
+                fw = None
             _ver = (fw or {}).get("version", OTA_VERSION)
             already = bool(cur) and (cur.startswith(_ver) or _ver.startswith(cur))
             if fw and not no_downgrade() and not already:
@@ -720,10 +706,15 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(payload)
                 return
-            # во всех остальных случаях спрашиваем настоящий Яндекс и отдаём его ответ как есть
-            _fb = "ok" if ("update_device_state" in clean_path or "set_device_capability" in clean_path) \
-                  else ("sync" if is_sync_path(self.path) else "ok")
-            self.proxy_upstream(fallback=_fb)
+            # прошивки нет (или версия совпала, или run/no_downgrade) — обновлений не предлагаем
+            payload = NO_UPDATE_PAYLOAD
+            print("  >>> [OTA] прошивки нет для этой модели — hasUpdate:false <<<")
+            log_local(f"OTA {self.path} -> hasUpdate:false")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
             return
             
         if "register" in path_l:
