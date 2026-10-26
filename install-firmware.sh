@@ -7,18 +7,14 @@
 #
 # На зеркале файл лежит как update.zip — сохраняем под именем версии.
 set -euo pipefail
-
 BASE="$(cd "$(dirname "$0")" && pwd)"
 MIRROR="${MIRROR_URL:-http://144.76.194.29:62891}"
 FW_DIR="$BASE/firmware"
 PY="${PYTHON:-python3}"
-
 PLATFORM=""
 VERSION=""
 LIST_ONLY=0
-
 usage() { sed -n '2,12p' "$0"; exit "${1:-0}"; }
-
 while [ $# -gt 0 ]; do
     case "$1" in
         -p|--platform) PLATFORM="$2"; shift 2 ;;
@@ -28,32 +24,30 @@ while [ $# -gt 0 ]; do
         *) echo "[!] неизвестный аргумент: $1"; usage 1 ;;
     esac
 done
-
 need() { command -v "$1" >/dev/null 2>&1 || { echo "[!] нужен $1"; exit 1; }; }
 need curl
 need "$PY"
-
 fetch() { curl -fsSL --retry 3 --connect-timeout 10 "$1"; }
-
+ok_archive() {
+    # прошивка Яндекса — cpio/SWUpdate (070701/070702), а не только zip (PK)
+    local h; h="$(head -c 6 "$1" 2>/dev/null)"
+    [ "${h:0:2}" = "PK" ] || [ "$h" = "070701" ] || [ "$h" = "070702" ]
+}
 # ссылки из листинга каталога
 dirs() { grep -oE 'href="[^"]+/"' | sed 's/href="//; s/\/"$//' | sort; }
-
 if [ "$LIST_ONLY" = 1 ]; then
     echo "Зеркало: $MIRROR"
     echo "Платформы:"
     fetch "$MIRROR/" | dirs | sed 's/^/  - /'
     exit 0
 fi
-
 PLATS=()
 while IFS= read -r line; do PLATS+=("$line"); done < <(fetch "$MIRROR/" | dirs)
-
 # -p 3 — тоже можно: номер из меню
 if [[ "$PLATFORM" =~ ^[0-9]+$ ]]; then
     PLATFORM="${PLATS[$((PLATFORM-1))]:-}"
     [ -n "$PLATFORM" ] || { echo "[!] нет платформы с таким номером"; exit 1; }
 fi
-
 if [ -z "$PLATFORM" ]; then
     [ "${#PLATS[@]}" -gt 0 ] || { echo "[!] не получил список платформ с $MIRROR"; exit 1; }
     echo "Зеркало: $MIRROR"
@@ -70,10 +64,8 @@ if [ -z "$PLATFORM" ]; then
     fi
     [ -n "$PLATFORM" ] || { echo "[!] нет такой платформы"; exit 1; }
 fi
-
 echo "[*] платформа: $PLATFORM"
 FW_DIR="$BASE/firmware/$PLATFORM"
-
 VERSIONS_URL="$MIRROR/$PLATFORM/"
 VERS=()
 while IFS= read -r line; do VERS+=("$line"); done < <(
@@ -85,13 +77,11 @@ def key(v):
 rows=[r.strip() for r in sys.stdin if r.strip()]
 print("\n".join(sorted(rows, key=key, reverse=True)))')
 [ "${#VERS[@]}" -gt 0 ] || { echo "[!] нет версий в $VERSIONS_URL"; exit 1; }
-
 # -v 5 — номер версии из списка
 if [[ "$VERSION" =~ ^[0-9]+$ ]]; then
     VERSION="${VERS[$((VERSION-1))]:-}"
     [ -n "$VERSION" ] || { echo "[!] нет версии с таким номером"; exit 1; }
 fi
-
 if [ -z "$VERSION" ]; then
     echo "Выбери версию (сверху новые):"
     case "$PLATFORM" in
@@ -114,20 +104,16 @@ if [ -z "$VERSION" ]; then
     VERSION="${VERS[$((n-1))]:-}"
 fi
 [ -n "$VERSION" ] || { echo "[!] версия не выбрана"; exit 1; }
-
 URL="$MIRROR/$PLATFORM/$VERSION"
 echo "[*] версия:    $VERSION"
 echo "[*] качаю:     $URL/update.zip"
-
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-
 fetch "$URL/metadata.json" > "$TMP/metadata.json" || echo "[!] metadata.json не найден, продолжу без него"
 fetch "$URL/update.zip" > "$TMP/update.zip" || echo "[!] зеркало не отдало update.zip"
-
 SIZE=$(wc -c < "$TMP/update.zip" 2>/dev/null | tr -d ' ')
 ZIPOK=0
-[ "${SIZE:-0}" -gt 1000000 ] && [ "$(head -c 2 "$TMP/update.zip" 2>/dev/null)" = "PK" ] && ZIPOK=1
+[ "${SIZE:-0}" -gt 1000000 ] && ok_archive "$TMP/update.zip" && ZIPOK=1
 if [ "$ZIPOK" = 0 ]; then
     # зеркало бывает битым/обрезанным (отдаёт ~33 КБ вместо 60 МБ) —
     # берём официальный URL из metadata.json
@@ -138,14 +124,13 @@ if [ "$ZIPOK" = 0 ]; then
         echo "[*] зеркало отдало ${SIZE:-0} б — качаю с официального URL: $ALT"
         curl -fsSL --retry 3 --connect-timeout 15 -o "$TMP/update.zip" "$ALT" || continue
         SIZE=$(wc -c < "$TMP/update.zip" | tr -d ' ')
-        if [ "$SIZE" -gt 1000000 ] && [ "$(head -c 2 "$TMP/update.zip" 2>/dev/null)" = "PK" ]; then
+        if [ "$SIZE" -gt 1000000 ] && ok_archive "$TMP/update.zip"; then
             ZIPOK=1
             break
         fi
     done
 fi
 [ "$ZIPOK" = 1 ] || { echo "[!] не удалось получить прошивку (размер ${SIZE:-0} б, zip: $ZIPOK)"; exit 1; }
-
 # контрольные суммы
 read -r CRC SHA < <("$PY" - "$TMP/update.zip" <<'PY'
 import sys, zlib, hashlib
@@ -159,7 +144,6 @@ print(crc & 0xFFFFFFFF, sha.hexdigest())
 PY
 )
 echo "[*] размер:    $SIZE б, crc32 $CRC"
-
 # сверяем с metadata.json (если там есть crc32)
 if [ -s "$TMP/metadata.json" ]; then
     META_CRC=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("crc32",""))' "$TMP/metadata.json" 2>/dev/null || true)
@@ -169,11 +153,9 @@ if [ -s "$TMP/metadata.json" ]; then
         echo "[!] crc32 не совпал с metadata.json ($META_CRC) — файл битый"; exit 1
     fi
 fi
-
 mkdir -p "$FW_DIR"
 DEST="$FW_DIR/$VERSION.zip"
 mv "$TMP/update.zip" "$DEST"
-
 cat > "$FW_DIR/manifest.json" <<JSON
 {
   "platform": "$PLATFORM",
@@ -185,10 +167,8 @@ cat > "$FW_DIR/manifest.json" <<JSON
   "note": "скачано install-firmware.sh с $MIRROR"
 }
 JSON
-
 # чистим старые zip, чтобы сервер не взял не тот файл
 find "$FW_DIR" -maxdepth 1 -name '*.zip' ! -name "$VERSION.zip" -print -delete | sed 's/^/[*] удалён старый: /'
-
 echo
 echo "[OK] прошивка: $DEST"
 echo "     manifest: $FW_DIR/manifest.json"
