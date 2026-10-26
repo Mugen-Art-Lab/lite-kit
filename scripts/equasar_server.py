@@ -443,10 +443,11 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         self.handle_request()
 
     def do_HEAD(self):
-        # колонка проверяет связность через HEAD /generate_204
+        # оказывается, алиска через этот эндпоинт не только проверяет связь, но и ставит часы
         if self.path.split("?")[0] == "/generate_204":
             self.send_response(204)
             self.send_header("Content-Length", "0")
+            self.send_header("X-Start-Time", str(time.time_ns() // 1000))
             self.end_headers()
             return
         self.send_response(200)
@@ -643,6 +644,7 @@ class EquasarHandler(http.server.BaseHTTPRequestHandler):
         if clean_path == "/generate_204":
             log_local(f"GET /generate_204 от {self.client_address[0]} -> 204")
             self.send_response(204)
+            self.send_header("X-Start-Time", str(time.time_ns() // 1000))
             self.end_headers()
             return
             
